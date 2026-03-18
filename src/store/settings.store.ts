@@ -8,10 +8,20 @@ interface SettingsStore {
   debugMode: boolean
   logLevel: LogLevel
   infiniteEnergy: boolean
+  stealthEnabled: boolean
+  downloadFolder: string
+  fileNamePrefix: string
+  includeDate: boolean
+  savedFolderPath: string // resolved via showDirectoryPicker, display-only in extension
   setProfile: (profile: ProfileName) => void
   setDebugMode: (debug: boolean) => void
   setLogLevel: (level: LogLevel) => void
   setInfiniteEnergy: (infinite: boolean) => void
+  setStealthEnabled: (enabled: boolean) => void
+  setDownloadFolder: (folder: string) => void
+  setFileNamePrefix: (prefix: string) => void
+  setIncludeDate: (include: boolean) => void
+  setSavedFolderPath: (path: string) => void
 }
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -21,11 +31,21 @@ export const useSettingsStore = create<SettingsStore>()(
       debugMode: extensionConfig.debug,
       logLevel: extensionConfig.logLevel,
       infiniteEnergy: false,
+      stealthEnabled: true,
+      downloadFolder: 'Vibe Informes',
+      fileNamePrefix: 'informe-vibe',
+      includeDate: true,
+      savedFolderPath: '',
 
       setProfile: (profile) => set({ profile }),
+      setDownloadFolder: (downloadFolder) => set({ downloadFolder }),
+      setFileNamePrefix: (fileNamePrefix) => set({ fileNamePrefix }),
+      setIncludeDate: (includeDate) => set({ includeDate }),
+      setSavedFolderPath: (savedFolderPath) => set({ savedFolderPath }),
       setDebugMode: (debugMode) => set({ debugMode }),
       setLogLevel: (logLevel) => set({ logLevel }),
       setInfiniteEnergy: (infiniteEnergy) => set({ infiniteEnergy }),
+      setStealthEnabled: (stealthEnabled) => set({ stealthEnabled }),
     }),
     {
       name: 'sef:settings',

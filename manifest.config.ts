@@ -3,8 +3,9 @@ import pkg from './package.json'
 
 export default defineManifest({
   manifest_version: 3,
-  name: 'SEF — Stealth Extension Framework',
-  description: 'Production-ready browser automation extension base framework.',
+  name: 'Vibe Reach — AI Investigative Outreach',
+  description:
+    'AI-powered investigative outreach extension with intelligent contact discovery and campaign management.',
   version: pkg.version,
   icons: {
     48: 'public/logo.png',
@@ -14,7 +15,6 @@ export default defineManifest({
     default_icon: {
       48: 'public/logo.png',
     },
-    default_popup: 'src/popup/index.html',
   },
   background: {
     service_worker: 'src/background/index.ts',

@@ -5,6 +5,7 @@ export const STORAGE_KEYS = {
   SETTINGS: 'sef:settings',
   THEME: 'sef:theme',
   LOGS: 'sef:logs',
+  RUNTIME: 'sef:runtime',
   MODULE_PREFIX: 'sef:module:',
 } as const
 

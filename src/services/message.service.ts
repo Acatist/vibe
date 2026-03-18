@@ -74,9 +74,9 @@ export class MessageService {
     try {
       const response = await chrome.tabs.sendMessage(tabId, request)
       return response as MessageResponse
-    } catch (err) {
-      log.error(`Failed to send message ${type} to tab ${tabId}`, err)
-      return { success: false, error: String(err) }
+    } catch {
+      // Tab may not have a content script listener — expected for broadcast
+      return { success: false, error: 'Tab unreachable' }
     }
   }
 
@@ -88,10 +88,14 @@ export class MessageService {
       const tabs = await chrome.tabs.query({})
       const sends = tabs
         .filter((tab) => tab.id !== undefined)
-        .map((tab) => this.sendToTab(tab.id!, type, payload))
+        .map((tab) =>
+          this.sendToTab(tab.id!, type, payload).catch(() => {
+            // Tab may not have a content script — this is expected
+          }),
+        )
       await Promise.allSettled(sends)
     } catch (err) {
-      log.error(`Failed to broadcast message ${type}`, err)
+      log.warn(`Broadcast ${type} failed`, err)
     }
   }
 

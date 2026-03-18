@@ -60,7 +60,7 @@ export const useEnergyStore = create<EnergyStore>()(
       },
     }),
     {
-      name: 'sef:energy',
+      name: 'sef:energy_state',
       storage: createJSONStorage(() => ({
         getItem: async (key) => {
           const result = await chrome.storage.local.get(key)

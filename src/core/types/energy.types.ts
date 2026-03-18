@@ -8,6 +8,7 @@ export type ActionCostKey =
   | 'scroll'
   | 'keypress'
   | 'scrape'
+  | 'scrapeUrl' // 1 unit per URL scraped — 10 scrapes = 1% energy
   | 'formFill'
   | 'submitForm'
   | 'like'

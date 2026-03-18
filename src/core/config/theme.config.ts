@@ -14,35 +14,35 @@ export const THEME_DEFINITIONS: Record<ThemeId, ThemeDefinition> = {
     description: 'Clean blue social media aesthetic',
     defaultMode: 'dark',
   },
-  midnight: {
-    id: 'midnight',
-    name: 'Midnight',
-    description: 'Deep purple hacker aesthetic',
+  perpetuity: {
+    id: 'perpetuity',
+    name: 'Perpetuity',
+    description: 'Retro terminal monospace aesthetic',
     defaultMode: 'dark',
   },
-  ocean: {
-    id: 'ocean',
-    name: 'Ocean',
-    description: 'Deep blue-cyan underwater palette',
+  'cosmic-night': {
+    id: 'cosmic-night',
+    name: 'Cosmic Night',
+    description: 'Deep violet starlit palette',
     defaultMode: 'dark',
   },
-  forest: {
-    id: 'forest',
-    name: 'Forest',
-    description: 'Dark green earthy tones',
+  'violet-bloom': {
+    id: 'violet-bloom',
+    name: 'Violet Bloom',
+    description: 'Bold violet with soft rounded edges',
     defaultMode: 'dark',
   },
-  sunset: {
-    id: 'sunset',
-    name: 'Sunset',
-    description: 'Warm orange and amber gradients',
+  'mocha-mousse': {
+    id: 'mocha-mousse',
+    name: 'Mocha Mousse',
+    description: 'Warm earthy coffee tones',
     defaultMode: 'dark',
   },
-  minimal: {
-    id: 'minimal',
-    name: 'Minimal',
-    description: 'Clean neutral black and white',
-    defaultMode: 'light',
+  'elegant-luxury': {
+    id: 'elegant-luxury',
+    name: 'Elegant Luxury',
+    description: 'Rich premium gold and amber',
+    defaultMode: 'dark',
   },
 }
 

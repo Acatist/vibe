@@ -1,5 +1,6 @@
 import type { LogLevel } from '@core/types/extension.types'
 import { extensionConfig } from '@config/extension.config'
+import { getLogPrefix } from '@services/runtime.service'
 
 interface LogEntry {
   timestamp: number
@@ -82,7 +83,8 @@ export class Logger {
       this.buffer.shift()
     }
 
-    const prefix = `[SEF:${this.context}]`
+    const runtimePrefix = getLogPrefix()
+    const prefix = `[${runtimePrefix}][SEF:${this.context}]`
     const formatted = `${prefix} ${message}`
 
     switch (level) {

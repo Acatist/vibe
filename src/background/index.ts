@@ -6,6 +6,7 @@ import { sessionService } from '@services/session.service'
 import { stealthService } from '@services/stealth.service'
 import { Logger } from '@services/logger.service'
 import { extensionConfig } from '@config/extension.config'
+import { scrapingOrchestrator } from '@services/scraping/scraping.orchestrator'
 
 const log = Logger.create('Background')
 
@@ -35,7 +36,7 @@ function registerMessageHandlers() {
   messageService.on(MessageType.ENERGY_GET, () => energyService.getState())
 
   messageService.on(MessageType.ENERGY_CONSUME, ({ action, amount }) =>
-    energyService.consume(action as Parameters<typeof energyService.consume>[0], amount),
+    energyService.consume(action, amount),
   )
 
   messageService.on(MessageType.ENERGY_REFILL, ({ amount }) => energyService.refill(amount))
@@ -53,6 +54,14 @@ function registerMessageHandlers() {
 
   messageService.on(MessageType.SESSION_END, () => sessionService.endSession())
 
+  messageService.on(MessageType.SESSION_IDLE, () => {
+    sessionService.getSessionState()
+  })
+
+  messageService.on(MessageType.SESSION_RESUME, () => {
+    sessionService.recordActivity()
+  })
+
   // Settings handlers
   messageService.on(MessageType.STEALTH_SET_PROFILE, ({ profile }) =>
     stealthService.setProfile(profile),
@@ -60,11 +69,34 @@ function registerMessageHandlers() {
 
   messageService.on(MessageType.STEALTH_GET_CONFIG, () => stealthService.getBehaviorProfile())
 
+  // Automation handlers (log-only until modules implemented)
+  messageService.on(MessageType.AUTOMATION_START, ({ moduleId }) => {
+    log.info(`Automation start requested: ${moduleId}`)
+  })
+
+  messageService.on(MessageType.AUTOMATION_STOP, ({ moduleId }) => {
+    log.info(`Automation stop requested: ${moduleId}`)
+  })
+
+  messageService.on(MessageType.AUTOMATION_STATUS, ({ moduleId, status }) => {
+    log.debug(`Automation status: ${moduleId} → ${status}`)
+  })
+
+  messageService.on(MessageType.AUTOMATION_LOG, ({ moduleId, level, message }) => {
+    log.debug(`[${moduleId}] ${level}: ${message}`)
+  })
+
   // Ping
   messageService.on(MessageType.PING, () => ({
     type: MessageType.PONG,
     payload: { timestamp: Date.now() },
   }))
+
+  // Scraping
+  messageService.on(MessageType.SCRAPING_START, (payload) => scrapingOrchestrator.start(payload))
+  messageService.on(MessageType.SCRAPING_PAUSE, () => scrapingOrchestrator.pause())
+  messageService.on(MessageType.SCRAPING_RESUME, () => scrapingOrchestrator.resume())
+  messageService.on(MessageType.SCRAPING_CANCEL, () => scrapingOrchestrator.cancel())
 
   log.debug('Message handlers registered')
 }
@@ -152,7 +184,14 @@ chrome.runtime.onStartup.addListener(async () => {
 // Side Panel Support
 // ─────────────────────────────────────────────
 
-chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {})
+// Open side panel directly when toolbar icon is clicked (no popup dialog)
+chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
+
+chrome.action.onClicked.addListener((tab) => {
+  if (tab.id) {
+    chrome.sidePanel.open({ tabId: tab.id }).catch(() => {})
+  }
+})
 
 // ─────────────────────────────────────────────
 // Utility

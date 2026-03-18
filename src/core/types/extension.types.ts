@@ -4,7 +4,13 @@
 
 export type ExtensionContext = 'background' | 'content' | 'popup' | 'options' | 'sidepanel'
 
-export type ThemeId = 'twitter' | 'midnight' | 'ocean' | 'forest' | 'sunset' | 'minimal'
+export type ThemeId =
+  | 'twitter'
+  | 'perpetuity'
+  | 'cosmic-night'
+  | 'violet-bloom'
+  | 'mocha-mousse'
+  | 'elegant-luxury'
 
 export type ThemeMode = 'light' | 'dark'
 

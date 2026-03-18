@@ -6,7 +6,7 @@ import type { ExtensionConfig } from '@core/types/extension.types'
  * Do NOT modify core framework files.
  */
 export const extensionConfig: ExtensionConfig = {
-  name: 'SEF — Stealth Extension Framework',
+  name: 'Vibe Reach — AI Investigative Outreach',
   version: '1.0.0',
   debug: false,
   defaultProfile: 'normal-user',

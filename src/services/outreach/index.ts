@@ -1,0 +1,5 @@
+export type { OutreachService, OutreachResult } from './outreach.interface'
+export { createOutreachService } from './outreach.factory'
+export { SimulationOutreachService } from './outreach.simulation'
+export { StagingOutreachService } from './outreach.staging'
+export { ProductionOutreachService } from './outreach.production'

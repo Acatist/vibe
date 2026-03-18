@@ -1,61 +1,57 @@
+import { useTranslation } from 'react-i18next'
+import { Radio, ExternalLink, PanelRight } from 'lucide-react'
 import { ThemeSelector } from '@components/ui/ThemeSelector'
-import { EnergyBar } from '@components/ui/EnergyBar'
-import { useSession } from '@hooks/useSession'
-import { useSettingsStore } from '@store/settings.store'
-import { SEF_VERSION } from '@core/constants/extension'
+import { useInvestigationStore } from '@store/investigation.store'
+import { useContactsStore } from '@store/contacts.store'
 
 export default function PopupApp() {
-  const { session } = useSession()
-  const { profile } = useSettingsStore()
+  const { t } = useTranslation()
+  const investigations = useInvestigationStore((s) => s.investigations)
+  const contacts = useContactsStore((s) => s.contacts)
 
   return (
-    <div className="sef-popup p-4 bg-background text-foreground space-y-4">
+    <div className="sef-popup p-4 bg-background text-foreground space-y-3">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-base font-bold">SEF</h1>
-          <p className="text-xs text-muted-foreground">v{SEF_VERSION}</p>
+        <div className="flex items-center gap-2">
+          <Radio className="w-4 h-4 text-primary" />
+          <div>
+            <h1 className="text-sm font-bold">{t('app.name')}</h1>
+            <p className="text-[10px] text-muted-foreground">{t('app.tagline')}</p>
+          </div>
         </div>
         <ThemeSelector />
       </div>
 
-      {/* Energy */}
-      <EnergyBar />
-
-      {/* Session Status */}
-      <div className="rounded-lg border border-border p-3 space-y-2 text-xs">
-        <div className="font-medium text-sm">Session</div>
-        <div className="grid grid-cols-2 gap-1 text-muted-foreground">
-          <span>Status</span>
-          <span className={session.isActive ? 'text-primary' : 'text-muted-foreground'}>
-            {session.isActive ? 'Active' : 'Idle'}
-          </span>
-          <span>Profile</span>
-          <span className="font-mono text-foreground capitalize">{profile}</span>
-          <span>Breaks</span>
-          <span className="font-mono text-foreground">{session.breakCount}</span>
-          <span>Fatigued</span>
-          <span className={session.isFatigued ? 'text-destructive' : 'text-foreground'}>
-            {session.isFatigued ? 'Yes' : 'No'}
-          </span>
+      {/* Quick Stats */}
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-lg border border-border p-2 text-center">
+          <p className="text-lg font-bold text-primary">{investigations.length}</p>
+          <p className="text-[10px] text-muted-foreground">{t('dashboard.activeInvestigations')}</p>
+        </div>
+        <div className="rounded-lg border border-border p-2 text-center">
+          <p className="text-lg font-bold text-primary">{contacts.length}</p>
+          <p className="text-[10px] text-muted-foreground">{t('dashboard.contactsDiscovered')}</p>
         </div>
       </div>
 
-      {/* Quick links */}
+      {/* Actions */}
       <div className="flex gap-2">
         <button
           type="button"
           onClick={() => chrome.runtime.openOptionsPage()}
-          className="flex-1 py-1.5 text-xs rounded-md border border-border hover:bg-muted transition"
+          className="flex-1 py-1.5 text-xs rounded-md border border-border hover:bg-muted transition flex items-center justify-center gap-1"
         >
-          Options
+          <ExternalLink className="w-3 h-3" />
+          {t('common.options')}
         </button>
         <button
           type="button"
           onClick={() => chrome.sidePanel?.open({ windowId: chrome.windows?.WINDOW_ID_CURRENT })}
-          className="flex-1 py-1.5 text-xs rounded-md bg-primary text-primary-foreground hover:opacity-90 transition"
+          className="flex-1 py-1.5 text-xs rounded-md bg-primary text-primary-foreground hover:opacity-90 transition flex items-center justify-center gap-1"
         >
-          Side Panel
+          <PanelRight className="w-3 h-3" />
+          {t('common.sidePanel')}
         </button>
       </div>
     </div>

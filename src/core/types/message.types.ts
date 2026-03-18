@@ -2,9 +2,9 @@
 // Message Bus Types
 // ─────────────────────────────────────────────
 
-import type { EnergyState } from './energy.types'
+import type { EnergyState, ActionCostKey } from './energy.types'
 import type { SessionState } from './stealth.types'
-import type { ThemeId, ThemeMode, ProfileName } from './extension.types'
+import type { ThemeId, ThemeMode, ProfileName, LogLevel } from './extension.types'
 
 export enum MessageType {
   // Energy
@@ -47,11 +47,21 @@ export enum MessageType {
   PING = 'PING',
   PONG = 'PONG',
   ERROR = 'ERROR',
+
+  // Real Scraping
+  SCRAPING_START = 'SCRAPING_START',
+  SCRAPING_PAUSE = 'SCRAPING_PAUSE',
+  SCRAPING_RESUME = 'SCRAPING_RESUME',
+  SCRAPING_CANCEL = 'SCRAPING_CANCEL',
+  SCRAPING_PROGRESS = 'SCRAPING_PROGRESS',
+  SCRAPING_CONTACT = 'SCRAPING_CONTACT',
+  SCRAPING_COMPLETE = 'SCRAPING_COMPLETE',
+  SCRAPING_ERROR = 'SCRAPING_ERROR',
 }
 
 export interface MessagePayloadMap {
   [MessageType.ENERGY_GET]: void
-  [MessageType.ENERGY_CONSUME]: { action: string; amount: number }
+  [MessageType.ENERGY_CONSUME]: { action: ActionCostKey; amount: number }
   [MessageType.ENERGY_REFILL]: { amount?: number }
   [MessageType.ENERGY_RESET]: void
   [MessageType.ENERGY_SET_INFINITE]: { infinite: boolean }
@@ -83,14 +93,69 @@ export interface MessagePayloadMap {
   [MessageType.PING]: void
   [MessageType.PONG]: { timestamp: number }
   [MessageType.ERROR]: { code: string; message: string }
+
+  // ── Scraping ──────────────────────────────────────────────────────────────
+  [MessageType.SCRAPING_START]: {
+    invId: string
+    query: string // search query string
+    targetCount: number // desired number of contacts (10–1000)
+    affinityCategory: string
+    affinitySubcategory: string
+    country: string
+    language: string
+    contactType: string
+  }
+  [MessageType.SCRAPING_PAUSE]: { invId: string }
+  [MessageType.SCRAPING_RESUME]: { invId: string }
+  [MessageType.SCRAPING_CANCEL]: { invId: string }
+  [MessageType.SCRAPING_PROGRESS]: {
+    invId: string
+    phase: 'google' | 'contacts'
+    currentUrl: string
+    urlsFound: number
+    contactsFound: number
+    targetCount: number
+    pagesScanned: number
+    energyLeft: number
+    status: 'running' | 'paused' | 'cancelled' | 'complete' | 'error'
+  }
+  [MessageType.SCRAPING_CONTACT]: {
+    invId: string
+    contact: {
+      name: string
+      email: string
+      role: string
+      organization: string
+      website: string
+      contactPage: string
+      specialization: string
+      topics: string[]
+      region: string
+    }
+  }
+  [MessageType.SCRAPING_COMPLETE]: {
+    invId: string
+    totalContacts: number
+    totalPagesScanned: number
+    energyConsumed: number
+    durationMs: number
+  }
+  [MessageType.SCRAPING_ERROR]: {
+    invId: string
+    error: string
+  }
 }
 
 export interface ExtensionSettings {
   profile: ProfileName
-  themeId: ThemeId
-  themeMode: ThemeMode
   debugMode: boolean
+  logLevel: LogLevel
   infiniteEnergy: boolean
+  stealthEnabled: boolean
+  downloadFolder: string
+  fileNamePrefix: string
+  includeDate: boolean
+  savedFolderPath: string
 }
 
 export interface MessageRequest<T extends MessageType = MessageType> {

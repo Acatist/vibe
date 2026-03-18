@@ -36,4 +36,7 @@ export default defineConfig({
       origin: [/chrome-extension:\/\//],
     },
   },
+  build: {
+    chunkSizeWarningLimit: 600,
+  },
 })

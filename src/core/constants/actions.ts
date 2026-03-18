@@ -13,6 +13,8 @@ export const ACTION_COSTS: ActionCostMap = {
 
   // Data operations
   scrape: 5,
+  /** Real URL scraping — 10 per 1% energy (max 1000 = 10 units per 1%) */
+  scrapeUrl: 1,
   screenshot: 3,
 
   // Form automation
