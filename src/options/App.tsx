@@ -32,7 +32,7 @@ export default function OptionsApp() {
   const [activeTab, setActiveTab] = useState<Tab>('profile')
   const { profile, debugMode, setProfile, setDebugMode, setInfiniteEnergy, infiniteEnergy } =
     useSettingsStore()
-  const { energy, reset: resetEnergy, refill } = useEnergy()
+  const { energy, reset: resetEnergy, refill, setInfinite } = useEnergy()
 
   return (
     <div className="sef-options min-h-screen bg-background text-foreground">
@@ -137,14 +137,17 @@ export default function OptionsApp() {
                 <input
                   type="checkbox"
                   checked={infiniteEnergy}
-                  onChange={(e) => setInfiniteEnergy(e.target.checked)}
+                  onChange={(e) => {
+                    setInfiniteEnergy(e.target.checked)
+                    setInfinite(e.target.checked)
+                  }}
                   className="accent-primary w-4 h-4"
                 />
               </div>
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => refill()}
+                  onClick={() => refill(energy.max - energy.current)}
                   className="px-4 py-2 text-sm rounded-md bg-primary text-primary-foreground hover:opacity-90 transition"
                 >
                   Refill Energy

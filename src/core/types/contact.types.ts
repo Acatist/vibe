@@ -21,4 +21,6 @@ export interface Contact {
   category: ContactCategory
   relevanceScore: number
   investigationId: string
+  /** true when the contact was below the acceptance threshold */
+  discarded?: boolean
 }

@@ -50,7 +50,7 @@ export function Navigation({ activeTab, onTabChange }: NavigationProps) {
                 : 'text-muted-foreground hover:text-foreground hover:bg-muted/60',
             )}
           >
-            <Icon className="w-[17px] h-[17px]" />
+            <Icon className="w-4.25 h-4.25" />
           </button>
         )
       })}

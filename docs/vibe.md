@@ -1,7 +1,7 @@
 # Vibe Reach — Documentación Técnica de Desarrollo
 
-> **Versión:** 1.3.0  
-> **Última actualización:** 18 de marzo de 2026  
+> **Versión:** 1.6.0  
+> **Última actualización:** 19 de marzo de 2026  
 > **Stack:** Chrome Extension MV3 · React 19 · TypeScript 5.8 · Tailwind CSS v4 · Zustand v5 · Vite
 
 ---
@@ -35,6 +35,8 @@
 25. [Historial de Desarrollo](#25-historial-de-desarrollo)
 26. [Decisiones de Diseño y Convenciones](#26-decisiones-de-diseño-y-convenciones)
 27. [Roadmap y Trabajo Pendiente](#27-roadmap-y-trabajo-pendiente)
+
+> Fases implementadas: 1–16 · Build limpio · 48 tests en verde ✅
 
 ---
 
@@ -458,6 +460,37 @@ Contenedor raíz del sidepanel. Estructura:
 - La vista activa se monta via `VIEW_MAP[activeTab]`, un mapa de `TabId → React.ComponentType`.
 - Cada cambio de tab aplica `key={activeTab}` para re-montar con animación fade-in.
 
+#### Listener global de mensajes de scraping
+
+`AppShell` aloja el listener de mensajes de scraping porque **persiste en el árbol React** incluso cuando el usuario navega entre vistas. Si el listener estuviera en `InvestigationView`, se desmontaría al navegar a `ContactsView` y se perderían todos los mensajes del orchestrator.
+
+```typescript
+// useEffect registrado al montar AppShell (una sola vez, sin dependencias)
+chrome.runtime.onMessage.addListener((msg) => {
+  const { type, payload: p } = msg
+
+  SCRAPING_PROGRESS → si status ‘running’/‘paused’: setLiveScrapingProgress({ pagesScanned, ... })
+                    → si status terminal: setLiveScrapingDone()
+                    → siempre: useEnergyStore.setState({ current: p.energyLeft })
+
+  SCRAPING_CONTACT  → construye Contact desde p.contact + activeBrief del store
+                    → addContacts([contact]) en useContactsStore
+                    → addContactIds(p.invId, [contact.id]) en useInvestigationStore
+
+  SCRAPING_COMPLETE → setScrapeStatus(p.invId, 'done')
+                    → completeInvestigation(p.invId)
+                    → setLiveScrapingDone()
+                    → setLastFinishReason(p.finishReason)
+
+  SCRAPING_ERROR    → setScrapeStatus(p.invId, 'error')
+                    → setLiveScrapingDone()
+})
+```
+
+En el mismo `useEffect` se envía `ENERGY_GET` al background para sincronizar el nivel real de energía en cuanto el sidepanel monta (sin esperar al primer broadcast de scraping).
+
+`activeBrief` (`{ affinityCategory, affinitySubcategory, contactType }`) se lee via `useInvestigationStore.getState().activeBrief` (fuera del render loop) para construir los objetos `Contact` en el handler de `SCRAPING_CONTACT`.
+
 ### Navigation (`src/components/layout/Navigation.tsx`)
 
 Barra de 6 tabs icono-only debajo del Header:
@@ -549,13 +582,30 @@ Diseño de tres zonas:
 
 - Icono `Zap` + etiqueta de energía + barra de progreso + label "%"
 
-### Hook `useEnergy`
+### Hook `useEnergy` (`src/hooks/useEnergy.ts`)
 
 ```typescript
 const { energy, energyPercent, isInfinite, consume, refill } = useEnergy()
 ```
 
-Puente entre el `EnergyStore` (Zustand) y el `EnergyService` (lógica de negocio), con sincronización bidireccional vía `chrome.runtime.sendMessage`.
+En cada montaje, `useEnergy` envía `ENERGY_GET` al background SW para obtener el nivel real de energía. Esto hace que el anillo y la barra reflejen el estado correcto al abrir el sidepanel, sin esperar al primer broadcast de scraping.
+
+El store ya **no usa persist middleware** ni acopla al `EnergyService` local (que antes actúa como fuente de verdad en el sidepanel y siempre valía 1000). La fuente de verdad es únicamente el `EnergyService` del Background SW.
+
+#### Arquitectura de sincronización de energía
+
+```
+Background SW (EnergyService)          Side Panel (useEnergyStore)
+─────────────────────────────          ──────────────────────────
+consumir por scrapeUrl           ───→  useEnergyStore.setState({ current: energyLeft })
+  (vía SCRAPING_PROGRESS broadcast)         ↑
+                                       ENERGY_GET en mount
+                                       (AppShell + useEnergy)
+Refill/Reset/Consume desde UI     ───→ messageService.send() → handler background
+  (optimistic update local)              → _syncFromBackground() para confirmar
+```
+
+Mutaciones desde la UI (botón Recargar, etc.) actualizan el store optimistamente Y envían el mensaje correspondiente al background. Tras la respuesta, se re-sincroniza el estado exacto.
 
 ---
 
@@ -710,13 +760,67 @@ El tab Dashboard y el formulario de investigación son la misma superficie.
 
 ### InvestigationView (`views/InvestigationView.tsx`)
 
-Vista central del flujo de trabajo. Tiene cuatro fases principales:
+Vista central del flujo de trabajo. Fases: `form` → `analyzing` → modal de informe → navega a `ContactsView`.
 
 #### Fase `form` (formulario de campaña)
 
-Organizado en tarjetas y secciones:
+**Módulo de Energía (Card 1)** — anillo SVG + badges LED + power bar (igual que antes).
 
-**Módulo de Energía (Card 1)**
+**Selector de tipo de contacto** — 3 botones: Empresa, Particular, Institucional.
+
+**Modos de scraping (sin card, inline):**
+
+- `fast` — heurística local, sin llamadas a IA por página, threshold bajo.
+- `precise` — scoring IA por candidato + pre-seeding de URLs target vía `generateSearchTargets()`, threshold alto.
+
+**Filtros de campaña (Card 2)** — categoría, subcategoría, idioma, país, slider consistencia.
+
+**Detalles y opciones (Card 3):**
+
+- `Textarea` de descripción libre.
+- Toggle `generateReport` — si activo, se genera informe IA antes de iniciar el scraping.
+- Slider de objetivo de contactos (100–10,000 step 100) con aviso de energía insuficiente.
+
+**Botón CTA `handleAcceptAndContinue()`:**
+
+- Si `generateReport = true` → llama a `handleAnalyze()` → abre modal de informe.
+- Si `generateReport = false` → crea `invId` directamente → llama a `handleStartScraping(invId)`.
+
+#### Fase `analyzing` (spinner)
+
+Ícono `Sparkles` con borde giratorio + skeletons de carga + texto i18n.
+
+#### Modal de informe (`reportModalOpen`)
+
+Diálogo que se abre sobre la vista actual (no sustituye la vista) con:
+
+- Informe renderizado con `react-markdown` + renderers personalizados.
+- Footer con botón secundario "Cancelar" y botón primario "Iniciar búsqueda" → llama a `handleStartScraping(currentInvIdRef.current)`.
+
+#### `handleStartScraping(invId)`
+
+```typescript
+async function handleStartScraping(invId: string) {
+  setActiveBrief({ affinityCategory, affinitySubcategory, contactType }) // para AppShell listener
+  setScrapeStatus(invId, 'running')
+
+  // Actualiza el store inmediatamente — no espera al primer broadcast
+  setLiveScrapingProgress({ status: 'running', contactsFound: 0, currentUrl: '', total: ..., pagesScanned: 0 })
+
+  const result = await messageService.send(MessageType.SCRAPING_START, { invId, ... })
+
+  if (!result?.success) {
+    setError(...)
+    setScrapeStatus(invId, 'idle')
+    setLiveScrapingDone()
+    return
+  }
+
+  onNavigate('contacts') // navega a ContactsView donde está el progreso en tiempo real
+}
+```
+
+> El listener de mensajes ya **no vive en `InvestigationView`** — fue movido a `AppShell` para que persista al navegar a `ContactsView`.
 
 - Anillo SVG de progreso (izquierda)
 - Info central: slogan + badge de tier + botones compra/recarga
@@ -793,9 +897,44 @@ Los contactos se añaden **uno a uno** en tiempo real al store según llegan del
 
 ### ContactsView (`views/ContactsView.tsx`)
 
-Vista de gestión de contactos descubiertos por scraping.
+Vista de gestión de contactos descubiertos por scraping. Conectada a `useContactsStore`, `useInvestigationStore` y `useCampaignStore`.
 
-#### Layout
+#### Tarjeta de progreso en vivo
+
+Mostrada en la parte superior cuando `liveScrapingStatus !== 'idle'`:
+
+```
+┌─ [ Globe animado ] Rastreando la web…          N contactos ─┐
+│ Páginas analizadas     {livePagesScanned} / {maxPagesScanned} │
+│ [=========================================──────────]     │
+│ [ search icon ] https://url-actual.com...           │
+│ [  Pausar  ]  [  Cancelar  ]                         │
+└──────────────────────────────────────────────────┘
+```
+
+- **`livePagesScanned`** — dato real del orchestrator (antes se mostraba `contactsFound × 3`, corregido).
+- **`maxPagesScanned`** = `min(targetCount × 5, 500)` — igual que la fórmula del orchestrator.
+- **Pause/Resume/Cancel** envían `SCRAPING_PAUSE/RESUME/CANCEL` via `messageService.send()`.
+- Estado pausado muestra "Rastreo pausado" con botón "Continuar" en lugar de "Pausar".
+
+#### Banner de razón de finalización
+
+Si `lastFinishReason` es distinto de `null` o `'target-reached'`, muestra un banner naranja con el motivo:
+
+| Razón               | Mensaje                                                         |
+| ------------------- | --------------------------------------------------------------- |
+| `energy-exhausted`  | El rastreo se detuvo porque se agotó la energía.                |
+| `queries-exhausted` | Se agotaron todas las búsquedas sin alcanzar el objetivo.       |
+| `stalled`           | El rastreo se detuvo inesperadamente. Puedes intentar de nuevo. |
+| `max-pages`         | Se alcanzó el límite de páginas sin cubrir el objetivo.         |
+
+#### Layout de contactos
+
+- **Tabs Relevantes / Otros:** separa contactos con `discarded: false` de `discarded: true`.
+- **Contactos reales** del `useContactsStore` filtrados por `investigationId === currentId`.
+- **Fallback mock** (5 contactos de demo) cuando el store está vacío.
+- Acordeón con empresa, URL, email, rol, región, topics, `ScoreBar`, compositor de mensaje.
+- Botón "Crear Campaña" abre un modal que llama a `createCampaign()` y navega a `CampaignsView`.
 
 Tabla expandible (acordeón) con los contactos.
 
@@ -1133,86 +1272,218 @@ El factory cachea la instancia y la invalida automáticamente si el modo cambia 
 
 ---
 
-## 17. ScrapingOrchestrator — Scraping Real de Google
+## 17. ScrapingOrchestrator — Motor de Scraping Multi-Motor
 
-**Archivo:** `src/services/scraping/scraping.orchestrator.ts`
+**Archivos:**
 
-El `ScrapingOrchestrator` es el núcleo del sistema de scraping real. Se ejecuta en el **Background Service Worker** (no en el sidepanel) y orquesta todo el ciclo de vida de una sesión de scraping.
+- `src/services/scraping/scraping.orchestrator.ts` — Orquestador principal (Background SW)
+- `src/services/scraping/scraping.scorer.ts` — Evaluador de candidatos (heurístico + IA)
 
-### Arquitectura
+El `ScrapingOrchestrator` es el núcleo del sistema de scraping real. Se ejecuta **exclusivamente en el Background Service Worker** y orquesta todo el ciclo de vida de una sesión de scraping real con cuatro motores de búsqueda.
+
+### Arquitectura general
 
 ```
-Side Panel                    Background SW                    Chrome Tab (visible)
-──────────                    ─────────────                    ──────────────────────
+Side Panel                    Background SW                    Chrome Tab (fondo)
+──────────                    ─────────────                    ──────────────────
 [SCRAPING_START] ──────────→  ScrapingOrchestrator.start()
-                               ├─ chrome.tabs.create()  ──────→  Tab abierto (usuario lo ve)
-                               ├─ Fase Google: navega a
-                               │  google.com/search?q=...  ───→  Página Google cargada
-                               │  executeScript(_extractGoogleResults)
-                               ├─ Fase Contactos: visita
-                               │  cada URL descubierta  ──────→  Página empresa cargada
-                               │  executeScript(_extractPageContacts)
-                               │  energyService.consume('scrapeUrl')
-[SCRAPING_PROGRESS] ←──────── │  chrome.runtime.sendMessage()
-[SCRAPING_CONTACT]  ←──────── │  (por cada contacto extraído)
-[SCRAPING_COMPLETE] ←──────── └─ fin del loop
+                               ├─ chrome.tabs.create(active:false) → Tab oculto
+                               ├─ Fase seeding (precise): AI seed URLs
+                               ├─ Loop principal:
+                               │   _fetchNextSearchPage()  ─────→ Google/DDG/Bing/Yahoo
+                               │   executeScript(extractor)       SERP cargada
+                               │   _extractWithSubpageProbing() → Página empresa
+                               │   scoreHeuristic / scoreWithAI
+                               │   energyService.consume('scrapeUrl')
+[SCRAPING_PROGRESS] ←──────── │  broadcast por cada página
+[SCRAPING_CONTACT]  ←──────── │  broadcast por cada candidato (aceptado o descartado)
+[SCRAPING_COMPLETE] ←──────── └─ fin del loop → _finishRun()
 ```
 
-### Flujo de ejecución
+### Motores de búsqueda (round-robin)
 
-1. **Inicio** — `start(params)`: crea una pestaña visible (`chrome.tabs.create`), construye 4 variantes de query desde el brief de campaña.
-2. **Fase Google** — Por cada variante de query, pagina `google.com/search?q=…&start=N&num=10` y extrae los resultados mediante `chrome.scripting.executeScript()` con la función `_extractGoogleResults()`.
-3. **Detección de bloqueo** — `_isBlockedPage()` detecta CAPTCHA, recaptcha y páginas de consentimiento de Google. Si se detecta, la sesión se **pausa automáticamente**.
-4. **Fase Contactos** — Visita cada URL descubierta, inyecta `_extractPageContacts()` que extrae:
-   - Emails vía `a[href^="mailto:"]` + regex sobre texto visible
-   - Nombre de organización vía `og:site_name`, `<title>`, dominio
-   - Descripción y keywords de metadatos
-   - Enlace a página de contacto
-5. **Sub-página de contacto** — Si no hay emails en la raíz, navega automáticamente a `/contact` o página similar.
-6. **Energía** — `energyService.consume('scrapeUrl')` por cada URL visitada. Si se agota la energía, el scraping se detiene limpiamente.
-7. **Streaming** — Cada contacto encontrado se envía inmediatamente al sidepanel via `chrome.runtime.sendMessage(SCRAPING_CONTACT)`.
+| Motor        | URL base                          | Extractor                     |
+| ------------ | --------------------------------- | ----------------------------- |
+| `google`     | `google.com/search?q=…&start=N`   | `_extractGoogleResults()`     |
+| `duckduckgo` | `html.duckduckgo.com/html/?q=…`   | `_extractDuckDuckGoResults()` |
+| `bing`       | `bing.com/search?q=…&first=N`     | `_extractBingResults()`       |
+| `yahoo`      | `search.yahoo.com/search?p=…&b=N` | `_extractYahooResults()`      |
 
-### Funciones inyectadas en los tabs (via `executeScript`)
+- Se itera en round-robin: si un motor devuelve bloqueo (CAPTCHA), se marca `blocked` y se salta.
+- Si devuelve 0 resultados, se marca `exhausted` y se salta.
+- Cuando todos los motores estan bloqueados/agotados para la variante actual, se pasa a la siguiente variante de query y se resetean los motores.
 
-Estas funciones son **autocontenidas** (sin closures sobre variables externas) para poder ser serializada y ejecutadas en el contexto del tab:
+### Variantes de query (`_buildQueryVariants`)
 
-| Función                   | Propósito                                                                                               |
-| ------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `_extractGoogleResults()` | Extrae hasta 10 resultados de una SERP de Google. Soporta múltiples selectores de A/B testing de Google |
-| `_isBlockedPage()`        | Detecta CAPTCHA (`#captcha-form`, `.g-recaptcha`), "unusual traffic", páginas de consentimiento EU      |
-| `_extractPageContacts()`  | Extrae emails, nombre de org, descripción, keywords, enlace de contacto de cualquier página web         |
-
-### Variantes de query
-
-Para maximizar la diversidad de URLs, se generan automáticamente **4 variantes** a partir del brief:
+Se generan **12 variantes** a partir del brief para maximizar la diversidad de URLs:
 
 ```typescript
 ;[
-  `{subcategoría} {categoría} {país} {tipología} email contact`,
-  `{subcategoría} {categoría} {país} {tipología} contact us email`,
-  `{query_libre} {país} "@" contact`,
-  `{subcategoría} {categoría} {país} mailto email`,
+  `{sub} {cat} {país} {tipología} email contact`,
+  `{sub} {cat} {país} {tipología} contact us`,
+  `{sub} {cat} "contact" "email" {país}`,
+  `{sub} {typeLabel} directory {país}`,
+  `list of {sub} {typeLabel} {país}`,
+  `top {sub} {typeLabel} {país}`,
+  `{query_libre} {país} email`,
+  `{query_libre} contact {tipología}`,
+  `{sub} {país} association members`,
+  `{sub} {país} network`,
+  `"{sub}" {país} contact email`,
+  `{sub} {cat} site:.{tld}`,
 ]
 ```
+
+### Deduplicación triple capa + historial persistente
+
+#### ScrapingHistory (persistente entre sesiones)
+
+```typescript
+class ScrapingHistory {
+  // Persiste en chrome.storage.local
+  STORAGE_KEY_DOMAINS = 'vibe:scraped-domains'
+  STORAGE_KEY_EMAILS  = 'vibe:scraped-emails'
+
+  hasDomain(url) / addDomain(url)
+  hasEmail(email) / addEmail(email)
+  save()  // llamado cada 10 páginas + al finalizar la sesión
+}
+```
+
+#### Dedup por URL (triple check)
+
+En cada iteración se verifica:
+
+1. `s.visitedUrls.has(normUrl)` — Set en sesión actual
+2. `history.hasDomain(normUrl)` — historial persistente entre sesiones
+3. `isBlockedDomain(url)` — lista negra de dominios (redes sociales, buscadores, etc.)
+
+#### Dedup por email
+
+1. `s.seenEmails.has(e)` — Set en sesión actual
+2. `history.hasEmail(e)` — historial persistente entre sesiones
+
+### Flujo de ejecución del loop principal (`_run`)
+
+```
+1. [Precise] _fetchAISeedTargets() → AI genera hasta 20 URLs semilla
+2. while (running && contactsFound < target && pagesScanned < maxPages && errors < MAX):
+   a. urlQueue vacía → _fetchNextSearchPage() (round-robin engines)
+   b. pop url → triple dedup check
+   c. _consumeEnergy('scrapeUrl')
+   d. _navigateTo(url) → _runInTab(_isBlockedPage)
+   e. [SERP] _runInTab(_humanScrollSerp) + _delay + _runInTab(_humanHoverSerpResults)
+   f. [SERP] _runInTab(extractor) → _enqueueUrls(results)
+   g. [Página] _extractWithSubpageProbing(url) → tries /contact, /about, /team, /impressum...
+   h. freshEmails = filter seenEmails/history
+   i. _evaluateAndAccept(url, pageData) → scoreHeuristic/scoreWithAI
+   j. score ≥ threshold → _broadcastContact(contact, discarded:false)
+      score < threshold → _broadcastContact(contact, discarded:true)
+   k. fatigue delay + micro-break probabilístico
+   l. history.save() cada 10 iteraciones
+3. Watchdog 45s: si no avanza, fuerza finishReason='stalled'
+4. _finishRun() → _broadcastProgress (status:complete) + _broadcastComplete + _closeTab(3s delay)
+```
+
+### ScrapingScorer (`scraping.scorer.ts`)
+
+Evalúa cada candidato y decide si se acepta o descarta:
+
+#### Scoring heurístico (`scoreHeuristic`) — modo `fast`
+
+| Señal                                   | Puntos máx |
+| --------------------------------------- | ---------- |
+| Nombre/dominio contiene términos target | +30        |
+| Meta description solapan con brief      | +20        |
+| Meta keywords solapan con brief         | +15        |
+| TLD coincide con país del brief         | +10        |
+| Tipo de contacto detectado en texto     | +10        |
+| Tiene página de contacto                | +10        |
+| Email específico (no genérico)          | +5 / -5    |
+| Dominio spam (redes sociales, dirs)     | -20        |
+
+#### Scoring IA (`scoreWithAI`) — modo `precise`
+
+1. Calcula heurístico como baseline.
+2. Llama a `AIProvider.evaluate(prompt)` solicitando JSON `{"score": N, "reasoning": "..."}`.
+3. Blended: `score = AI×0.7 + heuristic×0.3`.
+4. Fallback a heurístico si IA falla.
+
+#### Umbral de aceptación (`getAcceptanceThreshold`)
+
+```typescript
+// base: 35 (fast) | 50 (precise)
+// offset: (consistency - 5) × 5  →  consistency 1 = -20, consistency 10 = +25
+threshold = clamp(base + offset, 10, 90)
+```
+
+### Humanización con SessionEngine
+
+El orchestrator integra `SessionEngine` del motor stealth para simular comportamiento humano:
+
+- **Delays escalados por fatiga:** a medida que pasa el tiempo de sesión, los delays aumentan (1500–3000ms frescos → 2500–5000ms fatigados).
+- **Micro-breaks probabilísticos:** cada `microBreakInterval` minutos (definido en el perfil de stealth), hace una pausa de `microBreakDuration` milisegundos.
+- **Scroll y hover en SERPs:** antes de extraer URLs de una página de resultados, `_humanScrollSerp()` y `_humanHoverSerpResults()` simulan lectura humana.
+- **Cooldown entre variantes:** pausa 3–7 segundos al cambiar de variante de query.
+
+### Funciones inyectadas en tabs (self-contained, sin closures)
+
+| Función                       | Propósito                                                                                     |
+| ----------------------------- | --------------------------------------------------------------------------------------------- |
+| `_extractGoogleResults()`     | Extrae URLs de SERP Google. Soporta múltiples selectores de A/B testing.                      |
+| `_extractDuckDuckGoResults()` | Extrae URLs de SERP DuckDuckGo HTML.                                                          |
+| `_extractBingResults()`       | Extrae URLs de SERP Bing.                                                                     |
+| `_extractYahooResults()`      | Extrae URLs de SERP Yahoo.                                                                    |
+| `_humanScrollSerp()`          | Scroll a posición aleatoria 30–70% de la página (simula lectura).                             |
+| `_humanHoverSerpResults()`    | Despacha `mouseover`/`mouseenter` en 2–3 resultados aleatorios visibles.                      |
+| `_isBlockedPage()`            | Detecta CAPTCHA, reCAPTCHA, "unusual traffic", páginas de consentimiento EU, "Access Denied". |
+| `_extractPageContacts()`      | Extrae emails, org name, descripción, keywords, enlace de contacto de cualquier página web.   |
 
 ### Control de sesión
 
 ```typescript
-scrapingOrchestrator.start(params) // abre tab, inicia loop
+scrapingOrchestrator.start(params) // crea tab background, inicia loop
 scrapingOrchestrator.pause() // detiene el loop en el siguiente tick
-scrapingOrchestrator.resume() // relanza el loop
-scrapingOrchestrator.cancel() // cancela y cierra el tab
+scrapingOrchestrator.resume() // relanza el loop (reset lastBreakAt)
+scrapingOrchestrator.cancel() // cancela y cierra el tab inmediatamente
+scrapingOrchestrator.getStatus() // 'idle' | 'running' | 'paused' | 'cancelled' | 'complete' | 'error'
 ```
 
-Si el usuario **cierra manualmente el tab**, la sesión se cancela automáticamente via `chrome.tabs.onRemoved`.
+Si el usuario **cierra manualmente el tab**, `chrome.tabs.onRemoved` cancela la sesión automáticamente.
 
-### Delays anti-detección
+### ScrapingSession (estado interno)
 
-Entre cada navegación se aplican delays aleatorios:
+```typescript
+interface ScrapingSession extends ScrapingStartParams {
+  tabId: number
+  status: ScrapingStatus
+  urlQueue: string[] // URLs pendientes de visitar
+  visitedUrls: Set<string> // dedup sesión (normalized)
+  seenEmails: Set<string> // dedup emails sesión
+  contactsFound: number // aceptados (score ≥ threshold)
+  discardedCount: number // rechazados (score < threshold)
+  pagesScanned: number // páginas de contacto visitadas
+  energyConsumed: number
+  acceptThreshold: number // calculado por getAcceptanceThreshold()
+  engines: Record<SearchEngine, EngineState> // blocked, exhausted, page
+  engineOrder: SearchEngine[]
+  currentEngineIdx: number
+  queryVariants: string[] // 12 variantes
+  currentVariantIdx: number
+  seedUrls: string[] // AI-seeded (precise mode)
+  _saveCounter: number
+}
+```
 
-- Entre resultados de Google: 1000–2000 ms
-- Entre páginas de contacto: 1500–3000 ms
-- Después de cargar una SERP: 800–1500 ms
+### Razones de finalización (`FinishReason`)
+
+| Razón               | Condición                                   |
+| ------------------- | ------------------------------------------- |
+| `target-reached`    | `contactsFound >= targetCount`              |
+| `energy-exhausted`  | `energyService.consume()` devuelve `false`  |
+| `queries-exhausted` | Todas las variantes y motores agotados      |
+| `max-pages`         | `pagesScanned >= min(targetCount × 5, 500)` |
+| `stalled`           | Watchdog: sin progreso por 45 segundos      |
 
 ### Tipos de mensajes de scraping (`src/core/types/message.types.ts`)
 
@@ -1241,6 +1512,8 @@ enum MessageType {
   country: string
   language: string
   contactType: string
+  scrapingMode: 'fast' | 'precise'
+  consistency: number // 1-10, controla el umbral de aceptación
 }
 ```
 
@@ -1249,14 +1522,31 @@ enum MessageType {
 ```typescript
 {
   invId: string
-  phase: 'google' | 'contacts'
+  phase: 'seeding' | 'google' | 'contacts'
   currentUrl: string
-  urlsFound: number
-  contactsFound: number
+  urlsFound: number // tamaño de visitedUrls.size
+  contactsFound: number // aceptados
+  discardedCount: number // rechazados por scoring
   targetCount: number
-  pagesScanned: number
+  pagesScanned: number // páginas de contacto visitadas (no SERPs)
   energyLeft: number
   status: 'running' | 'paused' | 'cancelled' | 'complete' | 'error'
+}
+```
+
+**Payload de `SCRAPING_CONTACT`:**
+
+```typescript
+{
+  invId: string
+  contact: {
+    name, email, role, organization, website, contactPage,
+    specialization, topics, region,
+    discoveryScore: number           // 0–100
+    classification: 'high'|'medium'|'low'
+    matchSignals: string[]
+    discarded?: boolean              // true si score < threshold
+  }
 }
 ```
 
@@ -1333,25 +1623,34 @@ storage: createJSONStorage(() => ({
 
 ### Stores y sus claves de persistencia
 
-| Store                   | Clave                | Estado persistido                                                                       |
-| ----------------------- | -------------------- | --------------------------------------------------------------------------------------- |
-| `useAIStore`            | `vibe-reach:ai`      | configs[], activeProvider                                                               |
-| `useEnergyStore`        | `sef:energy`         | current, max, lastRefillTime, isInfinite, totalConsumed                                 |
-| `useThemeStore`         | `sef:theme`          | themeId, mode                                                                           |
-| `useLanguageStore`      | `sef:language`       | language                                                                                |
-| `useContactsStore`      | `sef:contacts`       | contacts[]                                                                              |
-| `useCampaignStore`      | `sef:campaigns`      | campaigns[]                                                                             |
-| `useInvestigationStore` | `sef:investigations` | investigations[]                                                                        |
-| `useReportsStore`       | `sef:reports`        | reports[] (Report[])                                                                    |
-| `useSettingsStore`      | `sef:settings`       | stealthEnabled, debugMode, downloadFolder, fileNamePrefix, includeDate, savedFolderPath |
-| `useBusinessStore`      | `sef:business`       | logoDataUrl, companyName, nif, address, phone, email                                    |
-| `useRuntimeStore`       | `sef:runtime`        | mode (RuntimeMode), setMode                                                             |
+| Store                   | Clave                      | Estado persistido                                                                                     |
+| ----------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `useAIStore`            | `vibe-reach:ai`            | configs[], activeProvider                                                                             |
+| `useEnergyStore`        | — _no persiste_            | Solo caché en memoria; la fuente de verdad es el `EnergyService` del Background SW                    |
+| `useThemeStore`         | `sef:theme`                | themeId, mode                                                                                         |
+| `useLanguageStore`      | `sef:language`             | language                                                                                              |
+| `useContactsStore`      | `vibe-reach:contacts`      | contacts[]                                                                                            |
+| `useCampaignStore`      | `sef:campaigns`            | campaigns[]                                                                                           |
+| `useInvestigationStore` | `vibe-reach:investigation` | investigations[], currentId, lastAnalysisMarkdown, lastFinishReason (los campos live no se persisten) |
+| `useReportsStore`       | `sef:reports`              | reports[] (Report[])                                                                                  |
+| `useSettingsStore`      | `sef:settings`             | stealthEnabled, debugMode, downloadFolder, fileNamePrefix, includeDate, savedFolderPath               |
+| `useBusinessStore`      | `sef:business`             | logoDataUrl, companyName, nif, address, phone, email                                                  |
+| `useRuntimeStore`       | `sef:runtime`              | mode (RuntimeMode), setMode                                                                           |
 
----
+### Estado vivo de scraping en `useInvestigationStore`
 
-## 20. Tipos del Dominio
+Campos **no persistidos** (excluídos via `partialize`):
 
-### Contact
+```typescript
+activeBrief: ActiveBrief | null // brief para que AppShell construya Contact desde SCRAPING_CONTACT
+liveScrapingStatus: 'idle' | 'running' | 'paused'
+liveContactsFound: number
+liveCurrentUrl: string
+liveScrapingTotal: number
+livePagesScanned: number // páginas reales visitadas (del orchestrator)
+```
+
+Actions: `setActiveBrief()`, `setLiveScrapingProgress({ pagesScanned, ... })`, `setLiveScrapingDone()`.
 
 ```typescript
 interface Contact {
@@ -1369,6 +1668,7 @@ interface Contact {
   category: ContactCategory // 'journalist' | 'ngo' | 'researcher' | ...
   relevanceScore: number // 0-100
   investigationId: string
+  discarded?: boolean // true cuando score < acceptThreshold (contacto baja relevancia)
 }
 ```
 
@@ -1621,15 +1921,22 @@ Los servicios de `scraping` y `outreach` aplican el Strategy Pattern y se docume
 
 ### Responsabilidades
 
-1. **Inicialización** al instalar/actualizar/arrancar el navegador.
-2. **Handlers de mensajes** para Energy, Session, Stealth, Ping y **Scraping**.
+1. **Inicialización** — `init()` se llama **incondicionalmente al arranque del módulo** (primera línea ejecutable) para garantizar que los handlers se registren en cada wakeup del Service Worker MV3. En MV3, el SW puede ser terminado por Chrome tras ~30s de inactividad; la próxima vez que llega un mensaje, el SW se despierta limpio y sin handlers registrados si dependemos solo de `onInstalled` / `onStartup`.
+2. **Handlers de mensajes** para Energy, Session, Stealth, Ping y Scraping.
 3. **Alarmas** periódicas:
-   - `ENERGY_REFILL` — cada 60 minutos: recarga energía y hace broadcast.
+   - `ENERGY_REFILL` — cada 60 minutos: recarga energía y hace broadcast `ENERGY_UPDATED`.
    - `SESSION_CLEANUP` — cada 5 minutos: limpieza de sesiones.
    - `HEARTBEAT` — cada 30 segundos: mantiene el SW activo.
 4. **Side Panel** — abre automáticamente al hacer clic en el icono de la barra.
-5. **Eventos de tab** — log de activación, carga y cierre de pestañas.
-6. **First install** — abre la página de opciones al instalar por primera vez.
+5. **First install** — abre la página de opciones al instalar por primera vez.
+
+```typescript
+// Patrón correcto: init() en el top-level del módulo
+init().catch((e) => log.error('Init failed', e))
+
+chrome.runtime.onInstalled.addListener(/* solo abre options en install */)
+chrome.runtime.onStartup.addListener(/* log únicamente */)
+```
 
 ### Handlers de scraping
 
@@ -1951,6 +2258,90 @@ Nuevas claves añadidas a `en.json` y `es.json`:
 | `investigation.scrapingPaused`     | Paused — Click Resume          | Pausado — Clic en Reanudar       |
 | `investigation.energyWarning`      | Only `{{available}}` energy... | Solo `{{available}}` unidades... |
 
+### Fase 13 — Motor de scraping multi-motor + humanización + ScrapingScorer
+
+**Objetivo:** Convertir el scraping de Google-only a un sistema de 4 motores, añadir scoring real de candidatos y humanización completa.
+
+**Lo que se construyó:**
+
+- **Multi-motor round-robin:** `Google`, `DuckDuckGo` (HTML-only), `Bing`, `Yahoo`. Cada motor tiene su extractor específico inyectado via `executeScript`. Si un motor es bloqueado (CAPTCHA), se salta; si está agotado (0 resultados), se salta. Cuando todos los motores están agotados para una variante, se pasa a la siguiente.
+- **12 variantes de query:** `_buildQueryVariants()` genera combinaciones diversas (directorio, lista, contactos, red, site:TLD, etc.) para maximizar la cobertura de URLs únicas.
+- **`ScrapingHistory`** — clase que persiste dominios y emails ya scraped en `chrome.storage.local` entre sesiones. Guarda cada 10 páginas y al finalizar. Evita que la misma empresa o email aparezca dos veces aunque el usuario haga múltiples campañas.
+- **Dedup triple capa:** `visitedUrls` (sesión) + `ScrapingHistory.hasDomain` (persistente) + `isBlockedDomain` (lista negra).
+- **`ScrapingScorer` (`scraping.scorer.ts`):** módulo independiente con `scoreHeuristic()` (sin IA, rápido) y `scoreWithAI()` (blended 70/30 IA+heurístico), más `getAcceptanceThreshold(consistency, mode)`.
+- **Contactos descartados:** si el score < threshold, el contacto se crea con `discarded: true` y se envía igualmente via `SCRAPING_CONTACT` para que el usuario los vea en la pestaña "Otros" de `ContactsView`.
+- **`SCRAPING_COMPLETE` payload:** incluye `finishReason` para mostrar banner explicativo en `ContactsView`.
+- **Sondeo de subpáginas:** `_extractWithSubpageProbing()` prueba `/contact`, `/contacto`, `/about`, `/about-us`, `/team`, `/impressum`, `/kontakt` si la página raíz no tiene emails.
+- **Watchdog timer:** `setInterval(10s)` que fuerza `finishReason='stalled'` si no hay progreso en 45 segundos.
+- **Humanización con `SessionEngine`:**
+  - Delays escalados por fatiga: `1500–3000ms` frescos → `2500–5000ms` fatigados.
+  - Micro-breaks probabilísticos según `shouldTakeBreak(timeSinceBreak)` del perfil stealth.
+  - `_humanScrollSerp()` + `_humanHoverSerpResults()` antes de extraer URLs de cada SERP.
+  - Cooldown 3–7 segundos entre variantes de query.
+- **Tab en background:** `chrome.tabs.create({ active: false })` — el tab de scraping ya no roba el foco del usuario.
+- **`ScrapingStartParams`** ampliado con `scrapingMode` y `consistency`.
+- **`SCRAPING_PROGRESS` payload** ampliado con `discardedCount`, `pagesScanned`, `phase: 'seeding'|'google'|'contacts'`.
+
+---
+
+### Fase 14 — Refactor del flujo de investigación + Listener global en AppShell
+
+**Objetivo:** Hacer el flujo más ágil y que el listener persista al navegar entre vistas.
+
+**Lo que se construyó / refactorizó:**
+
+- **Modal de informe:** en lugar de una fase `report` completa que reemplazaba la vista, el informe se muestra ahora en un `Dialog` (`reportModalOpen`) superpuesto sobre el formulario. El usuario puede cancelar y volver al formulario sin perder el estado.
+- **Toggle `generateReport`:** el usuario puede optar por saltar el informe IA e ir directamente al scraping. Si `false`, `handleAcceptAndContinue()` crea el `invId` y llama a `handleStartScraping()` sin pasar por `handleAnalyze()`.
+- **Modos de scraping en el formulario:** las tarjetas `fast` y `precise` se movieron de la fase `report` al propio formulario (Card 2), junto al resto de filtros.
+- **Listener movido a `AppShell`:** el `chrome.runtime.onMessage` handler ya no vive en `InvestigationView` (que se desmonta al navegar) sino en `AppShell` donde persiste durante toda la sesión del sidepanel.
+- **`activeBrief` en `useInvestigationStore`:** almacena `{ affinityCategory, affinitySubcategory, contactType }` justo antes de enviar `SCRAPING_START`. El listener de `AppShell` lo lee vía `useInvestigationStore.getState().activeBrief` para inferir la categoría del contacto al construir el objeto `Contact`.
+- **`useInvestigationStore` — campos live:** añadidos `liveScrapingStatus`, `liveContactsFound`, `liveCurrentUrl`, `liveScrapingTotal`, `livePagesScanned`, `lastFinishReason`. Excluidos de `partialize` (no persisten).
+- **`ContactsView` — tarjeta de progreso en vivo:** muestra el estado de scraping en tiempo real con `liveScrapingStatus`, URL actual, páginas analizadas y botones Pausar/Reanudar/Cancelar.
+- **`ContactsView` — tabs Relevantes / Otros:** separa contactos con `discarded: false` de `discarded: true`. Los totales se muestran en los tabs.
+- **`ContactsView` — banner de fin:** si `lastFinishReason` está definido y no es `target-reached`, muestra un banner naranja con el motivo.
+- **`InvestigationView` — eliminada la fase `scraping`:** toda la UI de progreso se movió a `ContactsView` y `AppShell`. `InvestigationView` ya solo tiene las fases `form` y `analyzing`.
+
+---
+
+### Fase 15 — Correcciones críticas del sistema de scraping
+
+**Problemas identificados y resueltos:**
+
+1. **SW no inicializado en cada wakeup** — El Background SW de MV3 se termina a los ~30s de inactividad. Al despertar, `onInstalled`/`onStartup` no se disparan, por lo que `registerMessageHandlers()` nunca se llamaba → `SCRAPING_START` llegaba sin handler → el scraping fallaba silenciosamente. **Fix:** `init()` en el top-level del módulo background.
+
+2. **Sin broadcast inicial de progreso** — Tras `start()` crear la sesión y llamar `_run()` de forma fire-and-forget, el sidepanel no recibía ningún mensaje hasta que se completaba la primera navegación a Google (~5–20 segundos). La tarjeta de progreso no aparecía. **Fix:** `this._broadcastProgress()` inmediatamente después de crear `this.session`.
+
+3. **Bug en `SCRAPING_PROGRESS` con status terminal** — `_finishRun()` envía un `SCRAPING_PROGRESS` con `status: 'complete'` antes de `SCRAPING_COMPLETE`. El handler de `AppShell` convertía cualquier status no-`'paused'` a `'running'`, haciendo que la tarjeta mostrara "Rastreando…" tras finalizar. **Fix:** solo llamar `setLiveScrapingProgress` cuando `status === 'running' | 'paused'`; para cualquier status terminal, llamar `setLiveScrapingDone()`.
+
+4. **Sin feedback inmediato ni manejo de errores en `handleStartScraping`** — `InvestigationView` no actualizaba el store hasta que llegaba el primer broadcast. Además, si `messageService.send()` fallaba, navegaba a ContactsView de todas formas sin mostrar el error. **Fix:** `setLiveScrapingProgress()` optimista al inicio + check `result.success` con rollback a `setLiveScrapingDone()` si hay error.
+
+5. **Tab de scraping activo robaba el foco** — `chrome.tabs.create({ active: true })` desplazaba al usuario a la pestaña de scraping. **Fix:** `active: false`.
+
+---
+
+### Fase 16 — Corrección del contador de páginas y el módulo de energía
+
+**Problema 1 — Contador de páginas incorrecto:**
+
+`ContactsView` mostraba `liveContactsFound × 3` como proxy. Con 1 contacto aceptado y 17 descartados, mostraba "aprox. 3 / 150" aunque se hubieran escaneado 18+ páginas. El orchestrator incluye `pagesScanned` en cada `SCRAPING_PROGRESS` pero el store nunca lo capturaba.
+
+**Fix:** Añadido `livePagesScanned: number` al store, `setLiveScrapingProgress` acepta `pagesScanned?`, AppShell lo propaga. `ContactsView` muestra `{livePagesScanned} / {min(targetCount × 5, 500)}` — la misma fórmula que usa el orchestrator para `maxPagesScanned`.
+
+**Problema 2 — Energía siempre al 100%:**
+
+Dos bugs interactuando:
+
+- **Colisión de clave de storage:** `EnergyService` del background persiste en `sef:energy_state` como `EnergyState` plano. `useEnergyStore` (con Zustand persist) también usaba `sef:energy_state` pero en formato `{ "state": {...}, "version": 0 }`. Ninguno podía leer el formato del otro → el sidepanel siempre rehydrataba con el default (1000/1000 = 100%).
+- **`syncFromService()` sobreescribía el valor real:** `useEnergy` se suscribía a `energyService.onChange()` — pero éste es el `EnergyService` local del sidepanel, que siempre vale 1000. Cualquier evento (como pulsar Recargar) disparaba `onChange` y restauraba el store a 1000, borrando el valor correcto recibido via `SCRAPING_PROGRESS`.
+
+**Fix:**
+
+- `useEnergyStore` reescrito sin `persist` middleware ni acoplamiento al `EnergyService` local. Es una caché en memoria pura.
+- Todas las mutaciones (refill, reset, setInfinite, consume) envían el mensaje correspondiente al background SW y después re-sincronizan con `ENERGY_GET`.
+- `useEnergy` hook: elimina la suscripción `onChange`. Hace `ENERGY_GET` en mount para obtener el nivel real.
+- `AppShell`: también hace `ENERGY_GET` en mount (cobertura paralela).
+- `SCRAPING_PROGRESS` broadcasts siguen actualizando `useEnergyStore.setState({ current: energyLeft })` en tiempo real.
+
 ---
 
 ## 26. Decisiones de Diseño y Convenciones
@@ -2004,48 +2395,68 @@ Nuevas claves añadidas a `en.json` y `es.json`:
 
 ## 27. Roadmap y Trabajo Pendiente
 
-### Completado (Fases 1–10)
+### Completado (Fases 1–12)
 
+- [x] Scaffolding MV3, motor stealth, energy system, sistema de temas, i18n completo
 - [x] Sistema de entornos de runtime con Strategy Pattern (simulation/staging/production)
 - [x] Motor de campaña `executeCampaign()` con pipeline de 5 pasos
-- [x] Motor de afinidad con scoring IA + fallback heurístico por overlap de keywords
-- [x] Servicio de scraping con 3 implementaciones (simulation/staging/production)
-- [x] Servicio de outreach con 3 implementaciones (simulation/staging/production)
-- [x] Panel de control de entorno en `SettingsView` (visible solo en modo debug)
-- [x] Generación automática de informes de simulación al finalizar campaña
-- [x] Logger con prefijo de entorno inyectado en todos los logs
+- [x] Motor de afinidad con scoring IA + fallback heurístico
+- [x] Servicio de scraping y outreach con 3 implementaciones + factory
+- [x] `ScrapingOrchestrator` inicial (Google, tab visible, 4 variantes)
 - [x] 48 tests en 11 archivos de test — todos en verde
 
-### Completado (Fase 11 — Auditoría)
+### Completado (Fase 13 — Multi-motor + Humanización + Scorer)
 
-- [x] `evaluate()` añadido a `AIProvider` interface + 3 implementaciones
-- [x] `affinity.engine.ts` corregido: usa `provider.evaluate()` en lugar de `provider.analyzePrompt()`
-- [x] `ai.store.ts`: eliminados getters obsoletos de Zustand; añadidos selectores `selectActiveConfig` + `selectApiKey`
-- [x] Factories: aserciones non-null `cached!` en `scraping.factory.ts` y `outreach.factory.ts`
+- [x] `ScrapingOrchestrator` multimotor: Google, DuckDuckGo, Bing, Yahoo (round-robin)
+- [x] `scraping.scorer.ts`: `scoreHeuristic()`, `scoreWithAI()`, `getAcceptanceThreshold()`
+- [x] Contactos descartados (`discarded: true`) visibles en pestaña "Otros"
+- [x] `ScrapingHistory` persistente en `chrome.storage.local`
+- [x] Triple dedup URL (sesión + historial + lista negra)
+- [x] Dedup email (sesión + historial)
+- [x] 12 variantes de query (`_buildQueryVariants`)
+- [x] Sondeo de subpáginas (`_extractWithSubpageProbing`)
+- [x] Watchdog timer 45s anti-stall
+- [x] Humanización: delays escalados por fatiga, micro-breaks, scroll + hover SERP
+- [x] Cooldown inter-variante 3–7s
+- [x] `finishReason` en `SCRAPING_COMPLETE`: `target-reached` | `energy-exhausted` | `queries-exhausted` | `stalled` | `max-pages`
 
-### Completado (Fase 12 — Scraping Real)
+### Completado (Fase 14 — Refactor flujo investigación)
 
-- [x] `ScrapingOrchestrator` implementado en background SW (tab visible, paginación Google, extracción de contactos)
-- [x] 8 `MessageType` SCRAPING\_\* con `MessagePayloadMap` completo
-- [x] 4 handlers de scraping en Background SW (`START/PAUSE/RESUME/CANCEL`)
-- [x] `InvestigationView` reescrita: slider 100–10,000 contactos, controles pausa/reanudar/cancelar, listener en tiempo real
-- [x] Fix `Tooltip must be used within TooltipProvider` (fase `report` envuelta en `<TooltipProvider>`)
-- [x] `ErrorBoundary` mejorado con visualización del error y `componentDidCatch`
-- [x] 7 nuevas keys i18n (en + es) para controles de scraping
-- [x] `build.chunkSizeWarningLimit: 600` en Vite config
+- [x] Informe IA en modal `Dialog` (no sustituye la vista)
+- [x] Toggle `generateReport` — saltar informe e ir directo al scraping
+- [x] Modos fast/precise movidos al formulario
+- [x] Listener de scraping movido de `InvestigationView` a `AppShell`
+- [x] `activeBrief` en `useInvestigationStore` para construir Contact en AppShell
+- [x] Campos live (`liveScrapingStatus`, `livePagesScanned`, `lastFinishReason`, etc.) en investigation store
+- [x] Tarjeta de progreso en vivo en `ContactsView` (actualizada con pagesScanned real)
+- [x] Tabs Relevantes / Otros en `ContactsView`
+- [x] Banner de razón de finalización en `ContactsView`
 
-### Inmediato
+### Completado (Fases 15–16 — Correcciones críticas)
+
+- [x] SW init en top-level del módulo (fix wakeup MV3)
+- [x] Broadcast inicial de progreso al crear sesión
+- [x] Fix `SCRAPING_PROGRESS` con status terminal en AppShell
+- [x] Fix feedback inmediato + manejo de errores en `handleStartScraping`
+- [x] Tab de scraping `active: false`
+- [x] `livePagesScanned` — contador real de páginas analizadas
+- [x] `useEnergyStore` — reescrito sin persist, caché pura + sync via background
+- [x] `useEnergy` hook — `ENERGY_GET` en mount, sin `onChange` local
+- [x] `AppShell` — `ENERGY_GET` en mount para sync inmediato
+
+### Pendiente inmediato
 
 - [ ] Integrar `ProductionOutreachService` con SMTP real y LinkedIn API
 - [ ] Feedback visual en `CampaignsView` del progreso de `executeCampaign()` (paso a paso)
 - [ ] Conectar motor de afinidad real al pipeline de scraping para scoring automático de contactos
+- [ ] Manejo guiado de CAPTCHA — pausa con aviso al usuario para resolver manualmente
 
 ### Medio plazo
 
-- [ ] Detección avanzada de CAPTCHA con pausa guiada al usuario
 - [ ] Sistema de cola de campañas con estado `queued → running → completed`
 - [ ] Soporte más idiomas en i18n (actuales: `en`, `es`)
 - [ ] Exportación de contactos a CSV/Excel
+- [ ] Deduplicate contacts across investigations (email-global)
 
 ### Largo plazo
 
@@ -2057,4 +2468,4 @@ Nuevas claves añadidas a `en.json` y `es.json`:
 
 ---
 
-_Documentación generada el 18 de marzo de 2026 · Vibe Reach v1.3.0_
+_Documentación actualizada el 19 de marzo de 2026 · Vibe Reach v1.6.0_

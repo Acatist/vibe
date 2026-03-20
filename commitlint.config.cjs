@@ -20,6 +20,8 @@ module.exports = {
       ],
     ],
     'scope-case': [2, 'always', 'lower-case'],
-    'subject-max-length': [2, 'always', 100],
+    'header-max-length': [0, 'always', Infinity],
+    'body-max-line-length': [0, 'always', Infinity],
+    'subject-max-length': [0, 'always', Infinity],
   },
 }

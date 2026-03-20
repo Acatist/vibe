@@ -163,21 +163,22 @@ function setupTabEvents() {
 // Extension Install / Update
 // ─────────────────────────────────────────────
 
+// Init every time the service worker starts (covers wakeup after termination).
+// onInstalled / onStartup are NOT reliable for routine SW restarts in MV3.
+init().catch((e) => log.error('Init failed', e))
+
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   if (reason === 'install') {
     log.info('Extension installed — seeding defaults')
-    await init()
     // Open options page on first install
     await chrome.tabs.create({ url: chrome.runtime.getURL('src/options/index.html') })
   } else if (reason === 'update') {
     log.info('Extension updated')
-    await init()
   }
 })
 
-chrome.runtime.onStartup.addListener(async () => {
+chrome.runtime.onStartup.addListener(() => {
   log.info('Browser startup')
-  await init()
 })
 
 // ─────────────────────────────────────────────

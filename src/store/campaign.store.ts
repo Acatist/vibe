@@ -19,6 +19,8 @@ interface CampaignStore {
   startCampaign: (id: string) => void
   completeCampaign: (id: string) => void
   getCampaign: (id: string) => Campaign | undefined
+  deleteCampaign: (id: string) => void
+  clearAllCampaigns: () => void
 }
 
 export const useCampaignStore = create<CampaignStore>()(
@@ -85,6 +87,10 @@ export const useCampaignStore = create<CampaignStore>()(
         })),
 
       getCampaign: (id) => get().campaigns.find((c) => c.id === id),
+
+      deleteCampaign: (id) => set((s) => ({ campaigns: s.campaigns.filter((c) => c.id !== id) })),
+
+      clearAllCampaigns: () => set({ campaigns: [] }),
     }),
     {
       name: 'vibe-reach:campaigns',

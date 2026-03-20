@@ -8,10 +8,28 @@ import type {
 } from '@core/types/investigation.types'
 import type { ScrapeTarget } from '@core/types/ai.types'
 
+/** Minimal campaign brief stored so AppShell can build Contact objects from scraping messages. */
+export interface ActiveBrief {
+  affinityCategory: string
+  affinitySubcategory: string
+  contactType: string
+}
+
 interface InvestigationStore {
   investigations: Investigation[]
   currentId: string | null
   lastAnalysisMarkdown: string
+  /** Reason why the last scraping session ended (null = target reached / normal) */
+  lastFinishReason: string | null
+
+  // ── Live scraping state (not persisted) ──────────────────────────────────
+  /** Brief stored when scraping starts so the global AppShell listener can build contacts. */
+  activeBrief: ActiveBrief | null
+  liveScrapingStatus: 'idle' | 'running' | 'paused'
+  liveContactsFound: number
+  liveCurrentUrl: string
+  liveScrapingTotal: number
+  livePagesScanned: number
 
   startInvestigation: (prompt: string, consistency: number) => string
   setPlan: (id: string, plan: InvestigationPlan) => void
@@ -22,9 +40,22 @@ interface InvestigationStore {
   completeInvestigation: (id: string) => void
   getCurrent: () => Investigation | null
   setLastAnalysisMarkdown: (md: string) => void
+  setLastFinishReason: (reason: string | null) => void
   setTargetUrls: (id: string, urls: ScrapeTarget[]) => void
   setScrapeStatus: (id: string, status: ScrapeStatus) => void
   setScrapeProgress: (id: string, current: number, total: number) => void
+  /** Store the active brief before scraping starts so AppShell can build Contact objects. */
+  setActiveBrief: (brief: ActiveBrief | null) => void
+  /** Update live scraping progress (called from AppShell message listener). */
+  setLiveScrapingProgress: (payload: {
+    status: 'running' | 'paused'
+    contactsFound: number
+    currentUrl: string
+    total: number
+    pagesScanned?: number
+  }) => void
+  /** Reset live scraping state when scraping finishes or errors. */
+  setLiveScrapingDone: () => void
 }
 
 export const useInvestigationStore = create<InvestigationStore>()(
@@ -33,8 +64,33 @@ export const useInvestigationStore = create<InvestigationStore>()(
       investigations: [],
       currentId: null,
       lastAnalysisMarkdown: '',
+      lastFinishReason: null,
+      activeBrief: null,
+      liveScrapingStatus: 'idle',
+      liveContactsFound: 0,
+      liveCurrentUrl: '',
+      liveScrapingTotal: 0,
+      livePagesScanned: 0,
 
       setLastAnalysisMarkdown: (md) => set({ lastAnalysisMarkdown: md }),
+      setLastFinishReason: (reason) => set({ lastFinishReason: reason }),
+      setActiveBrief: (brief) => set({ activeBrief: brief }),
+      setLiveScrapingProgress: ({ status, contactsFound, currentUrl, total, pagesScanned }) =>
+        set({
+          liveScrapingStatus: status,
+          liveContactsFound: contactsFound,
+          liveCurrentUrl: currentUrl,
+          liveScrapingTotal: total,
+          livePagesScanned: pagesScanned ?? 0,
+        }),
+      setLiveScrapingDone: () =>
+        set({
+          liveScrapingStatus: 'idle',
+          liveContactsFound: 0,
+          liveCurrentUrl: '',
+          liveScrapingTotal: 0,
+          livePagesScanned: 0,
+        }),
 
       startInvestigation: (prompt, consistency) => {
         const id = crypto.randomUUID()
@@ -129,6 +185,19 @@ export const useInvestigationStore = create<InvestigationStore>()(
     }),
     {
       name: 'vibe-reach:investigation',
+      partialize: (state) => {
+        // Live scraping state and activeBrief are transient — don't persist them.
+        const {
+          activeBrief: _ab,
+          liveScrapingStatus: _ls,
+          liveContactsFound: _lc,
+          liveCurrentUrl: _lu,
+          liveScrapingTotal: _lt,
+          livePagesScanned: _lp,
+          ...rest
+        } = state
+        return rest
+      },
       storage: createJSONStorage(() => ({
         getItem: async (key) => {
           const result = await chrome.storage.local.get(key)

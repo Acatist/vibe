@@ -15,6 +15,12 @@ import {
   CheckCircle2,
   Scan,
   X,
+  AlertTriangle,
+  Search,
+  Pause,
+  Play,
+  Square,
+  Trash2,
 } from 'lucide-react'
 import { Button } from '@components/ui/button'
 import { Input } from '@components/ui/input'
@@ -25,6 +31,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@compo
 import { useCampaignStore } from '@store/campaign.store'
 import { useContactsStore } from '@store/contacts.store'
 import { useInvestigationStore } from '@store/investigation.store'
+import { messageService } from '@services/message.service'
+import { MessageType } from '@core/types/message.types'
 import type { Contact, ContactCategory } from '@core/types/contact.types'
 import type { TabId } from '@components/layout/Navigation'
 
@@ -69,6 +77,7 @@ interface MockContact {
   region: string
   score: number
   contactPage: string
+  discarded?: boolean
 }
 
 const MOCK_CONTACTS: MockContact[] = [
@@ -167,7 +176,7 @@ function ScoreBar({ score }: { score: number }) {
             <TooltipTrigger asChild>
               <Info className="w-3 h-3 text-muted-foreground/50 hover:text-muted-foreground cursor-help transition-colors" />
             </TooltipTrigger>
-            <TooltipContent className="max-w-[200px] text-center leading-snug text-xs">
+            <TooltipContent className="max-w-50 text-center leading-snug text-xs">
               Puntuación calculada por la IA según la afinidad temática entre tu perfil y este
               contacto. Mayor porcentaje = mayor potencial de colaboración.
             </TooltipContent>
@@ -213,7 +222,7 @@ function MessageComposer({ email }: { email: string }) {
         placeholder="Escribe tu mensaje aquí…"
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        className="text-xs min-h-[72px] resize-none"
+        className="text-xs min-h-18 resize-none"
       />
       <div className="flex items-center justify-between">
         <p className="text-[10px] text-muted-foreground">
@@ -239,19 +248,29 @@ function MessageComposer({ email }: { email: string }) {
   )
 }
 
-function ContactCard({ contact }: { contact: MockContact }) {
+function ContactCard({ contact, onDelete }: { contact: MockContact; onDelete?: () => void }) {
   const [open, setOpen] = useState(false)
   const [msgOpen, setMsgOpen] = useState(false)
 
   return (
-    <div className="rounded-xl border border-border overflow-hidden animate-fade-in">
+    <div
+      className={`rounded-xl border overflow-hidden animate-fade-in ${contact.discarded ? 'border-amber-500/30 bg-amber-500/3' : 'border-border'}`}
+    >
       {/* Header row */}
       <div
         className={`grid grid-cols-[minmax(0,1fr)_auto_auto] gap-0 cursor-pointer transition-colors ${open ? 'bg-primary/5' : 'hover:bg-muted/40'}`}
         onClick={() => setOpen((v) => !v)}
       >
         <div className="px-3 py-2.5 min-w-0">
-          <p className="text-xs font-medium truncate">{contact.company}</p>
+          <div className="flex items-center gap-1.5">
+            {contact.discarded && (
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"
+                title="Baja relevancia"
+              />
+            )}
+            <p className="text-xs font-medium truncate">{contact.company}</p>
+          </div>
           <a
             href={`https://${contact.website}`}
             target="_blank"
@@ -284,7 +303,7 @@ function ContactCard({ contact }: { contact: MockContact }) {
                 <span className="text-muted-foreground uppercase tracking-wide text-[10px]">
                   Rol
                 </span>
-                <span className="font-medium">{contact.role}</span>
+                <span className="font-medium">{contact.role || 'Indefinido'}</span>
               </div>
               <div className="flex flex-col gap-0.5">
                 <span className="text-muted-foreground uppercase tracking-wide text-[10px]">
@@ -349,6 +368,17 @@ function ContactCard({ contact }: { contact: MockContact }) {
                   <ChevronDown className="w-3 h-3 ml-auto" />
                 )}
               </Button>
+              {onDelete && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                  onClick={onDelete}
+                  title="Eliminar contacto"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </Button>
+              )}
             </div>
 
             {msgOpen && <MessageComposer email={contact.email} />}
@@ -367,8 +397,18 @@ interface ContactsViewProps {
 
 export function ContactsView({ onNavigate }: ContactsViewProps) {
   const { createCampaign, campaigns } = useCampaignStore()
-  const { contacts: allStoreContacts, addContacts } = useContactsStore()
-  const { currentId, getCurrent } = useInvestigationStore()
+  const { contacts: allStoreContacts, addContacts, deleteContact } = useContactsStore()
+  const {
+    currentId,
+    getCurrent,
+    lastFinishReason,
+    setLastFinishReason,
+    liveScrapingStatus,
+    liveContactsFound,
+    liveCurrentUrl,
+    liveScrapingTotal,
+    livePagesScanned,
+  } = useInvestigationStore()
 
   // Block duplicate campaigns for the same investigation
   const existingCampaign = campaigns.find((c) => c.investigationId === currentId && currentId)
@@ -382,7 +422,9 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
   // Build the display list: real contacts from the store, or mock data as fallback
   const hasRealContacts = investigationContacts.length > 0
 
-  const displayContacts: MockContact[] = hasRealContacts
+  const [hiddenMockIds, setHiddenMockIds] = useState<Set<string>>(new Set())
+
+  const allDisplayContacts: MockContact[] = hasRealContacts
     ? investigationContacts.map((c) => ({
         id: c.id,
         company: c.organization || c.name,
@@ -398,12 +440,29 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
         region: c.region,
         score: c.relevanceScore,
         contactPage: c.contactPage,
+        discarded: c.discarded,
       }))
-    : MOCK_CONTACTS
+    : MOCK_CONTACTS.filter((c) => !hiddenMockIds.has(c.id))
+
+  // Split into relevant (accepted) and others (discarded)
+  const relevantContacts = allDisplayContacts.filter((c) => !c.discarded)
+  const otherContacts = allDisplayContacts.filter((c) => c.discarded)
+
+  // Tab state: 'relevant' or 'others'
+  const [activeTab, setActiveTab] = useState<'relevant' | 'others'>('relevant')
+  const displayContacts = activeTab === 'relevant' ? relevantContacts : otherContacts
 
   // ── Cascade scraping simulation — re-runs every time currentId changes
   // Contacts are shown immediately; the cascade effect happens live
   // during scraping via SCRAPING_CONTACT messages adding to the store one by one.
+
+  function handleDeleteContact(id: string) {
+    if (hasRealContacts) {
+      deleteContact(id)
+    } else {
+      setHiddenMockIds((prev) => new Set([...prev, id]))
+    }
+  }
 
   // ── Modal state
   const [modalOpen, setModalOpen] = useState(false)
@@ -425,7 +484,7 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
 
     // Persist contacts to the store only if they're mock (real ones are already persisted)
     if (!hasRealContacts) {
-      const contactsToSave: Contact[] = displayContacts.map((c) => ({
+      const contactsToSave: Contact[] = relevantContacts.map((c) => ({
         id: c.id,
         name: c.company,
         role: c.role,
@@ -449,7 +508,7 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
       investigationId: currentId ?? '',
       prompt: inv?.prompt ?? campBody.trim(),
       status: 'draft',
-      contactIds: displayContacts.map((c) => c.id),
+      contactIds: relevantContacts.map((c) => c.id),
       messages: [],
     })
 
@@ -461,8 +520,128 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
     }, 1400)
   }
 
+  // Finish reason display text
+  const FINISH_REASON_TEXT: Record<string, string> = {
+    'energy-exhausted': 'El rastreo se detuvo porque se agotó la energía.',
+    'queries-exhausted': 'Se agotaron todas las búsquedas de Google sin alcanzar el objetivo.',
+    stalled: 'El rastreo se detuvo inesperadamente. Puedes intentar de nuevo.',
+    'max-pages': 'Se alcanzó el límite de páginas escaneadas sin cubrir el objetivo.',
+  }
+
   return (
     <div className="flex flex-col flex-1">
+      {/* ── Live scraping progress (shows while scraping is running / paused) */}
+      {liveScrapingStatus !== 'idle' && (
+        <div className="mb-3 rounded-xl border border-primary/30 bg-card p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="relative w-4 h-4">
+                <Globe
+                  className={`w-4 h-4 text-primary ${liveScrapingStatus === 'running' ? 'animate-pulse' : ''}`}
+                />
+              </div>
+              <p className="text-xs font-semibold">
+                {liveScrapingStatus === 'paused' ? 'Rastreo pausado' : 'Rastreando la web…'}
+              </p>
+            </div>
+            <span className="text-xs font-bold text-primary tabular-nums">
+              {liveContactsFound} contactos
+            </span>
+          </div>
+
+          {liveScrapingTotal > 0 && (
+            <div className="space-y-1">
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>Páginas analizadas</span>
+                <span className="tabular-nums">
+                  {livePagesScanned} / {Math.min(liveScrapingTotal * 5, 500)}
+                </span>
+              </div>
+              <Progress
+                value={Math.min(
+                  Math.min(liveScrapingTotal * 5, 500) > 0
+                    ? (livePagesScanned / Math.min(liveScrapingTotal * 5, 500)) * 100
+                    : 0,
+                  99,
+                )}
+                className="h-1.5"
+              />
+            </div>
+          )}
+
+          {liveCurrentUrl && (
+            <div className="flex items-center gap-1.5">
+              <Search className="w-2.5 h-2.5 text-primary shrink-0 animate-pulse" />
+              <span className="text-[10px] text-muted-foreground truncate">{liveCurrentUrl}</span>
+            </div>
+          )}
+
+          {/* Pause / Resume / Cancel */}
+          <div className="flex gap-2 pt-1 border-t border-border/40">
+            {liveScrapingStatus === 'running' ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1 h-8 text-xs gap-1.5"
+                onClick={() =>
+                  messageService
+                    .send(MessageType.SCRAPING_PAUSE, { invId: currentId ?? '' })
+                    .catch(() => {})
+                }
+              >
+                <Pause className="w-3 h-3" />
+                Pausar
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1 h-8 text-xs gap-1.5 border-primary/40 text-primary"
+                onClick={() =>
+                  messageService
+                    .send(MessageType.SCRAPING_RESUME, { invId: currentId ?? '' })
+                    .catch(() => {})
+                }
+              >
+                <Play className="w-3 h-3" />
+                Continuar
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1 h-8 text-xs gap-1.5 border-destructive/40 text-destructive hover:bg-destructive/10"
+              onClick={() =>
+                messageService
+                  .send(MessageType.SCRAPING_CANCEL, { invId: currentId ?? '' })
+                  .catch(() => {})
+              }
+            >
+              <Square className="w-3 h-3" />
+              Cancelar
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Finish reason notification banner */}
+      {lastFinishReason && lastFinishReason !== 'target-reached' && (
+        <div className="mb-3 flex items-start gap-2 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-2.5">
+          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] text-amber-600 leading-snug">
+              {FINISH_REASON_TEXT[lastFinishReason] ?? 'El rastreo finalizó antes de lo esperado.'}
+            </p>
+          </div>
+          <button
+            onClick={() => setLastFinishReason(null)}
+            className="shrink-0 text-amber-500 hover:text-amber-400 transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* ── Header */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1.5">
@@ -471,11 +650,37 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
             Contactos encontrados
           </h2>
           <span className="text-xs tabular-nums text-muted-foreground font-medium">
-            {displayContacts.length}/{displayContacts.length}
+            {allDisplayContacts.length} total
           </span>
         </div>
         <Progress value={100} className="h-1" />
       </div>
+
+      {/* ── Tabs: Relevant / Others */}
+      {otherContacts.length > 0 && (
+        <div className="flex gap-1 mb-3 rounded-lg bg-muted/50 p-1">
+          <button
+            onClick={() => setActiveTab('relevant')}
+            className={`flex-1 text-xs font-semibold py-1.5 rounded-md transition-colors ${
+              activeTab === 'relevant'
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            Relevantes ({relevantContacts.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('others')}
+            className={`flex-1 text-xs font-semibold py-1.5 rounded-md transition-colors ${
+              activeTab === 'others'
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            Otros ({otherContacts.length})
+          </button>
+        </div>
+      )}
 
       {/* ── Contacts list */}
       <div className="space-y-2 flex-1">
@@ -486,7 +691,11 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
           </div>
         )}
         {displayContacts.map((contact) => (
-          <ContactCard key={contact.id} contact={contact} />
+          <ContactCard
+            key={contact.id}
+            contact={contact}
+            onDelete={() => handleDeleteContact(contact.id)}
+          />
         ))}
       </div>
 
@@ -551,12 +760,12 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
                 {/* ── Header */}
                 <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
                   <div className="w-9 h-9 rounded-xl bg-primary/15 flex items-center justify-center shrink-0">
-                    <Plus className="w-[18px] h-[18px] text-primary" />
+                    <Plus className="w-4.5 h-4.5 text-primary" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <h3 className="text-sm font-semibold">Nueva Campaña</h3>
                     <p className="text-[11px] text-muted-foreground">
-                      {displayContacts.length} contactos seleccionados
+                      {relevantContacts.length} contactos seleccionados
                     </p>
                   </div>
                   <button
@@ -576,7 +785,7 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
                     <User2 className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                     <p className="text-xs text-muted-foreground">
                       <span className="font-medium text-foreground">
-                        {displayContacts.length} contactos
+                        {relevantContacts.length} contactos
                       </span>{' '}
                       incluidos automáticamente
                     </p>
@@ -615,7 +824,7 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
                       placeholder="La IA personalizará este mensaje para cada contacto…"
                       value={campBody}
                       onChange={(e) => setCampBody(e.target.value)}
-                      className="text-sm min-h-[72px] resize-none bg-background"
+                      className="text-sm min-h-18 resize-none bg-background"
                     />
                   </div>
                 </div>

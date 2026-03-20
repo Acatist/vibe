@@ -1,10 +1,23 @@
 import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
 import type { EnergyState } from '@core/types/energy.types'
 import type { ActionCostKey } from '@core/types/energy.types'
-import { energyService } from '@services/energy.service'
+import { messageService } from '@services/message.service'
+import { MessageType } from '@core/types/message.types'
 import { ACTION_COSTS } from '@core/constants/actions'
 import { energyConfig } from '@config/energy.config'
+
+/**
+ * EnergyStore — UI cache for energy state.
+ *
+ * The background service worker's EnergyService is the single source of truth.
+ * This store is populated/updated via:
+ *   1. An ENERGY_GET request on mount (see useEnergy hook)
+ *   2. SCRAPING_PROGRESS broadcasts (energyLeft field) handled in AppShell
+ *
+ * Mutations (refill / reset / setInfinite) optimistically update local state
+ * AND send the corresponding message to the background so it stays in sync.
+ * No persist middleware — the background already persists the authoritative state.
+ */
 
 interface EnergyStore extends EnergyState {
   consume: (action: ActionCostKey, customCost?: number) => boolean
@@ -12,67 +25,90 @@ interface EnergyStore extends EnergyState {
   reset: () => void
   setInfinite: (infinite: boolean) => void
   canAfford: (action: ActionCostKey, customCost?: number) => boolean
+  /** @deprecated kept for interface compat — real sync goes through AppShell / useEnergy */
   syncFromService: () => void
 }
 
-export const useEnergyStore = create<EnergyStore>()(
-  persist(
-    (set, get) => ({
-      current: energyConfig.maxEnergy,
-      max: energyConfig.maxEnergy,
-      lastRefillTime: Date.now(),
-      isInfinite: energyConfig.infiniteMode,
-      totalConsumed: 0,
-      sessionConsumed: 0,
+/** Helper: re-sync from background after a mutation resolves. */
+function _syncFromBackground(): void {
+  messageService
+    .send(MessageType.ENERGY_GET, undefined)
+    .then((res) => {
+      if (res?.success && res.data) {
+        const d = res.data as EnergyState
+        // Guard: only apply fields that are valid numbers / booleans to avoid
+        // clobbering the store with undefined if the background returns partial data.
+        const patch: Partial<EnergyState> = {}
+        if (typeof d.current === 'number') patch.current = d.current
+        if (typeof d.max === 'number') patch.max = d.max
+        if (typeof d.isInfinite === 'boolean') patch.isInfinite = d.isInfinite
+        if (Object.keys(patch).length > 0) useEnergyStore.setState(patch)
+      }
+    })
+    .catch(() => {})
+}
 
-      consume: (action, customCost) => {
-        const result = energyService.consume(action, customCost)
-        if (result.success) {
-          set(energyService.getState())
-        }
-        return result.success
-      },
+export const useEnergyStore = create<EnergyStore>()((set, get) => ({
+  current: energyConfig.maxEnergy,
+  max: energyConfig.maxEnergy,
+  lastRefillTime: Date.now(),
+  isInfinite: energyConfig.infiniteMode,
+  totalConsumed: 0,
+  sessionConsumed: 0,
 
-      refill: (amount) => {
-        energyService.refill(amount)
-        set(energyService.getState())
-      },
+  consume: (action, customCost) => {
+    const { current, isInfinite } = get()
+    if (isInfinite) return true
+    const cost = customCost ?? ACTION_COSTS[action]
+    if (current < cost) return false
+    // Optimistic local update
+    set((s) => ({
+      current: s.current - cost,
+      totalConsumed: s.totalConsumed + cost,
+      sessionConsumed: s.sessionConsumed + cost,
+    }))
+    // Sync background
+    messageService
+      .send(MessageType.ENERGY_CONSUME, { action, amount: cost })
+      .then(() => _syncFromBackground())
+      .catch(() => {})
+    return true
+  },
 
-      reset: () => {
-        energyService.reset()
-        set(energyService.getState())
-      },
+  refill: (amount) => {
+    // Compute explicit amount before sending — JSON.stringify drops undefined,
+    // so sending { amount: undefined } would cause the background to only refill
+    // by config.refillAmount (100) instead of filling to max.
+    const { current, max } = get()
+    const fillAmount = amount ?? max - current
+    set({ current: Math.min(current + fillAmount, max) })
+    messageService
+      .send(MessageType.ENERGY_REFILL, { amount: fillAmount })
+      .then(() => _syncFromBackground())
+      .catch(() => {})
+  },
 
-      setInfinite: (infinite) => {
-        energyService.setInfinite(infinite)
-        set(energyService.getState())
-      },
+  reset: () => {
+    set((s) => ({ current: s.max }))
+    messageService
+      .send(MessageType.ENERGY_RESET, undefined)
+      .then(() => _syncFromBackground())
+      .catch(() => {})
+  },
 
-      canAfford: (action, customCost) => {
-        const { current, isInfinite } = get()
-        if (isInfinite) return true
-        const cost = customCost ?? ACTION_COSTS[action]
-        return current >= cost
-      },
+  setInfinite: (infinite) => {
+    set({ isInfinite: infinite })
+    messageService.send(MessageType.ENERGY_SET_INFINITE, { infinite }).catch(() => {})
+  },
 
-      syncFromService: () => {
-        set(energyService.getState())
-      },
-    }),
-    {
-      name: 'sef:energy_state',
-      storage: createJSONStorage(() => ({
-        getItem: async (key) => {
-          const result = await chrome.storage.local.get(key)
-          return (result[key] as string | null) ?? null
-        },
-        setItem: async (key, value) => {
-          await chrome.storage.local.set({ [key]: value })
-        },
-        removeItem: async (key) => {
-          await chrome.storage.local.remove(key)
-        },
-      })),
-    },
-  ),
-)
+  canAfford: (action, customCost) => {
+    const { current, isInfinite } = get()
+    if (isInfinite) return true
+    const cost = customCost ?? ACTION_COSTS[action]
+    return current >= cost
+  },
+
+  syncFromService: () => {
+    // No-op — sync is driven by AppShell (SCRAPING_PROGRESS) and useEnergy (mount)
+  },
+}))

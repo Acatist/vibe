@@ -90,11 +90,23 @@
     "sendPower": "Send power",
     "targetCountLabel": "Contact Target",
     "targetCountTooltip": "Set how many contacts to discover. Each page visited costs 1 energy unit — 10 pages = 1% energy. Min 10, max 1,000.",
+    "scrapingMode": "Scraping Mode",
+    "scrapingModeTooltip": "Fast uses keyword signals only (no AI calls per page). Precise uses AI to seed and evaluate each candidate.",
+    "scrapingModeFast": "Fast",
+    "scrapingModePrecise": "Precise",
+    "scrapingModeFastDesc": "Keyword signals, no API calls",
+    "scrapingModePreciseDesc": "AI seeding + evaluation per page",
     "pauseScraping": "Pause",
     "resumeScraping": "Resume",
     "cancelScraping": "Cancel",
     "scrapingPaused": "Paused — Click Resume",
-    "energyWarning": "Only {{available}} energy available. {{total}} contacts requested — scraping will stop when energy runs out."
+    "energyWarning": "Only {{available}} energy available. {{total}} contacts requested — scraping will stop when energy runs out.",
+    "generateReport": "AI Analysis report",
+    "generateReportDesc": "Get a strategic brief before searching",
+    "viewLastReport": "View last analysis report",
+    "analyzeAndSearch": "Analyze & Search",
+    "reportModalTitle": "Campaign Intelligence Report",
+    "startSearchFromReport": "Search Contacts"
   },
   "contacts": {
     "title": "Contacts",
@@ -291,7 +303,7 @@
     "export": {
       "title": "Export & Downloads",
       "folder": "Report save folder",
-      "folderHint": "Click \"Select\" to choose a folder on your computer, or type the name manually.",
+      "folderHint": "Subfolder name within your Downloads folder. Leave blank to save directly to Downloads.",
       "folderSelected": "Selected folder: {{name}}",
       "selectFolder": "Select",
       "prefix": "File name prefix",

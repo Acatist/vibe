@@ -7,7 +7,6 @@ import {
   Building2,
   User,
   Landmark,
-  ChevronLeft,
   Info,
   Zap,
   Search,
@@ -17,9 +16,11 @@ import {
   Plus,
   RefreshCcw,
   Globe,
-  Pause,
-  Play,
-  Square,
+  FileText,
+  X,
+  ChevronRight,
+  CreditCard,
+  Lock,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -29,7 +30,6 @@ import { Textarea } from '@components/ui/textarea'
 import { Slider } from '@components/ui/slider'
 import { Badge } from '@components/ui/badge'
 import { Skeleton } from '@components/ui/skeleton'
-import { Progress } from '@components/ui/progress'
 import {
   Select,
   SelectContent,
@@ -39,24 +39,23 @@ import {
 } from '@components/ui/select'
 import { Card, CardContent } from '@components/ui/card'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@components/ui/tooltip'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@components/ui/dialog'
 import { useAIStore, selectApiKey } from '@store/ai.store'
 import { useInvestigationStore } from '@store/investigation.store'
 import { useEnergy } from '@hooks/useEnergy'
-import { useEnergyStore } from '@store/energy.store'
+import { useRuntimeStore } from '@store/runtime.store'
 import { getAIProvider } from '@services/ai.service'
-import { useContactsStore } from '@store/contacts.store'
 import { messageService } from '@services/message.service'
 import { MessageType } from '@core/types/message.types'
 import { AFFINITY_CATEGORIES, CONTACT_LANGUAGES, COUNTRIES } from '@core/constants/affinity'
 import type { ContactType, CampaignBrief } from '@/providers/ai/ai.provider'
-import type { Contact, ContactCategory } from '@core/types/contact.types'
 import type { TabId } from '@components/layout/Navigation'
 
 interface InvestigationViewProps {
   onNavigate: (tab: TabId) => void
 }
 
-type Phase = 'form' | 'analyzing' | 'report' | 'scraping' | 'error'
+type Phase = 'form' | 'analyzing'
 
 const CONTACT_TYPES: { value: ContactType; labelKey: string; icon: LucideIcon }[] = [
   { value: 'corporate', labelKey: 'investigation.contactTypes.corporate', icon: Building2 },
@@ -79,60 +78,49 @@ const LOCALE_NAMES: Record<string, string> = {
   pl: 'Polish',
 }
 
+// ── Battle.net bar colour class — kept for future re-enable
+// function getBnetBarColorClass(pct: number, infinite: boolean): string {
+//   if (infinite || pct >= 100) return 'bnet-progress__bar--blue'
+//   if (pct >= 85) return 'bnet-progress__bar--green'
+//   if (pct >= 55) return 'bnet-progress__bar--yellow'
+//   if (pct >= 30) return 'bnet-progress__bar--orange'
+//   return ''
+// }
+
 function InfoTip({ text }: { text: string }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Info className="w-3 h-3 text-muted-foreground/50 hover:text-muted-foreground cursor-help transition-colors shrink-0" />
       </TooltipTrigger>
-      <TooltipContent className="max-w-[200px] text-center leading-snug">{text}</TooltipContent>
+      <TooltipContent className="max-w-50 text-center leading-snug">{text}</TooltipContent>
     </Tooltip>
   )
 }
-
-// ── Module-level helpers ─────────────────────────────────────────────────────
-
-function formatEmailToName(email: string): string {
-  return email
-    .split('@')[0]
-    .replace(/[._-]/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-}
-
-function inferCategory(affinityCategory: string, contactType: ContactType): ContactCategory {
-  const cat = affinityCategory.toLowerCase()
-  if (cat.includes('media') || cat.includes('journalism') || cat.includes('press'))
-    return 'journalist'
-  if (cat.includes('legal') || cat.includes('advocacy') || cat.includes('rights'))
-    return 'legal-advocate'
-  if (
-    cat.includes('ngo') ||
-    cat.includes('environment') ||
-    cat.includes('social') ||
-    contactType === 'institutional'
-  )
-    return 'ngo'
-  if (cat.includes('research') || cat.includes('academic') || cat.includes('education'))
-    return 'researcher'
-  return 'researcher'
-}
-
 export function InvestigationView({ onNavigate }: InvestigationViewProps) {
   const { t, i18n } = useTranslation()
   const apiKey = useAIStore(selectApiKey)
   const {
     setLastAnalysisMarkdown,
+    lastAnalysisMarkdown,
     startInvestigation,
     setError: setInvError,
     setScrapeStatus,
-    completeInvestigation,
-    addContactIds,
+    setActiveBrief,
+    setLiveScrapingProgress,
+    setLiveScrapingDone,
   } = useInvestigationStore()
-  const { addContacts: addContactsToStore, contacts: allContacts } = useContactsStore()
   const { energy, energyPercent, isInfinite, refill } = useEnergy()
-  const reportRef = useRef<HTMLDivElement>(null)
-  const briefRef = useRef<CampaignBrief | null>(null)
-  const invIdRef = useRef<string>('')
+  const { mode: runtimeMode } = useRuntimeStore()
+  // isDev used by the payment modal and hidden progress bar (re-enable when needed)
+  const _isDev = runtimeMode !== 'production'
+  void _isDev
+  /** The invId created by handleAnalyze — passed to handleStartScraping via the modal. */
+  const currentInvIdRef = useRef<string>('')
+
+  // Recharge simulation state (dev only) — null = real value, number = animated value
+  const [rechargeAnimPct, setRechargeAnimPct] = useState<number | null>(null)
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false)
 
   // Form state
   const [contactType, setContactType] = useState<ContactType>('corporate')
@@ -142,84 +130,20 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
   const [country, setCountry] = useState('worldwide')
   const [consistency, setConsistency] = useState([5])
   const [description, setDescription] = useState('')
+  const [targetScrapeCount, setTargetScrapeCount] = useState([50])
+  const [scrapingMode, setScrapingMode] = useState<'fast' | 'precise'>('fast')
+  /** Whether to generate an AI analysis report before starting the search. */
+  const [generateReport, setGenerateReport] = useState(true)
 
-  // Execution state
+  // Execution / modal state
   const [phase, setPhase] = useState<Phase>('form')
   const [reportMarkdown, setReportMarkdown] = useState('')
+  const [reportModalOpen, setReportModalOpen] = useState(false)
   const [error, setError] = useState('')
   const [bonusPercent, setBonusPercent] = useState(0)
-  const [scrapeProgress, setScrapeProgress] = useState({ current: 0, total: 0, currentUrl: '' })
-  const [contactsFound, setContactsFound] = useState(0)
-  const [targetScrapeCount, setTargetScrapeCount] = useState([50])
-  const [scrapingStatus, setScrapingStatus] = useState<'idle' | 'running' | 'paused'>('idle')
 
   const selectedCategory = AFFINITY_CATEGORIES.find((c) => c.value === affinityCategory)
   const subcategories = selectedCategory?.subcategories ?? []
-
-  // ── Real-scraping message listener ─────────────────────────────────────────
-  useEffect(() => {
-    if (typeof chrome === 'undefined' || !chrome.runtime?.onMessage) return
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const onMessage = (msg: any) => {
-      if (msg.type === MessageType.SCRAPING_PROGRESS) {
-        const p = msg.payload
-        setScrapeProgress({
-          current: p.pagesScanned,
-          total: p.targetCount,
-          currentUrl: p.currentUrl,
-        })
-        setContactsFound(p.contactsFound)
-        // Sync energy display with the background’s real consumption
-        if (typeof p.energyLeft === 'number') {
-          useEnergyStore.setState({ current: p.energyLeft })
-        }
-        if (p.status === 'paused') setScrapingStatus('paused')
-        else if (p.status === 'running') setScrapingStatus('running')
-      } else if (msg.type === MessageType.SCRAPING_CONTACT) {
-        const c = msg.payload.contact
-        const contact: Contact = {
-          id: crypto.randomUUID(),
-          name: c.name || formatEmailToName(c.email),
-          role: c.role || '',
-          organization: c.organization || '',
-          email: c.email,
-          website: c.website || '',
-          contactPage: c.contactPage || '',
-          specialization: c.specialization || '',
-          topics: c.topics?.length
-            ? c.topics
-            : [
-                briefRef.current?.affinityCategory ?? '',
-                briefRef.current?.affinitySubcategory ?? '',
-              ].filter(Boolean),
-          region: c.region || 'International',
-          recentArticles: [],
-          category: inferCategory(
-            briefRef.current?.affinityCategory ?? '',
-            briefRef.current?.contactType ?? 'corporate',
-          ) as ContactCategory,
-          relevanceScore: 50 + Math.floor(Math.random() * 31),
-          investigationId: invIdRef.current,
-        }
-        addContactsToStore([contact])
-        addContactIds(invIdRef.current, [contact.id])
-      } else if (msg.type === MessageType.SCRAPING_COMPLETE) {
-        setScrapeStatus(invIdRef.current, 'done')
-        completeInvestigation(invIdRef.current)
-        setScrapingStatus('idle')
-        onNavigate('contacts')
-      } else if (msg.type === MessageType.SCRAPING_ERROR) {
-        setError(msg.payload.error)
-        setScrapeStatus(invIdRef.current, 'error')
-        setScrapingStatus('idle')
-        setPhase('report')
-      }
-    }
-    chrome.runtime.onMessage.addListener(onMessage)
-    return () => chrome.runtime.onMessage?.removeListener(onMessage)
-    // onNavigate is stable for the lifetime of this panel
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   async function handleAnalyze() {
     if (!description.trim()) return
@@ -227,7 +151,7 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
     setError('')
 
     const invId = startInvestigation(description.trim(), consistency[0])
-    invIdRef.current = invId
+    currentInvIdRef.current = invId
 
     try {
       const provider = getAIProvider()
@@ -247,7 +171,6 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
         description: description.trim(),
         reportLanguage: LOCALE_NAMES[i18n.language] ?? i18n.language,
       }
-      briefRef.current = brief
 
       const result = await provider.analyzeCampaign(brief)
 
@@ -255,34 +178,45 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
         setReportMarkdown(result.data.reportMarkdown)
         // Persist immediately so it survives view-switches
         setLastAnalysisMarkdown(result.data.reportMarkdown)
-        setPhase('report')
+        setPhase('form')
+        setReportModalOpen(true)
       } else {
         setError(result.error ?? 'Analysis failed')
         setInvError(invId, result.error ?? 'Analysis failed')
-        setPhase('error')
+        setPhase('form')
       }
     } catch (e) {
       setError((e as Error).message)
       setInvError(invId, (e as Error).message)
-      setPhase('error')
+      setPhase('form')
     }
   }
 
-  async function handleStartScraping() {
-    const invId = invIdRef.current
-    if (!invId) return
-
-    setPhase('scraping')
-    setContactsFound(0)
-    setScrapeProgress({ current: 0, total: targetScrapeCount[0], currentUrl: '' })
-    setScrapingStatus('running')
-    setScrapeStatus(invId, 'running')
-
+  /** Start scraping for the given invId and immediately navigate to contacts. */
+  async function handleStartScraping(invId: string) {
     const categoryLabel = selectedCategory?.label ?? affinityCategory
     const subcategoryLabel =
       subcategories.find((s) => s.value === affinitySubcategory)?.label ?? affinitySubcategory
 
-    await messageService.send(MessageType.SCRAPING_START, {
+    // Store brief so AppShell's global listener can build Contact objects.
+    setActiveBrief({
+      affinityCategory: categoryLabel,
+      affinitySubcategory: subcategoryLabel,
+      contactType,
+    })
+
+    setScrapeStatus(invId, 'running')
+
+    // Show the progress card immediately — don't wait for the first broadcast.
+    setLiveScrapingProgress({
+      status: 'running',
+      contactsFound: 0,
+      currentUrl: '',
+      total: targetScrapeCount[0],
+      pagesScanned: 0,
+    })
+
+    const result = await messageService.send(MessageType.SCRAPING_START, {
       invId,
       query: description.trim(),
       targetCount: targetScrapeCount[0],
@@ -291,23 +225,33 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
       country: COUNTRIES.find((c) => c.value === country)?.label ?? country,
       language: CONTACT_LANGUAGES.find((l) => l.value === language)?.label ?? language,
       contactType,
+      scrapingMode,
+      consistency: consistency[0],
     })
+
+    if (!result?.success) {
+      setError(result?.error ?? 'Failed to start scraping — please reload the extension.')
+      setScrapeStatus(invId, 'idle')
+      setLiveScrapingDone()
+      return
+    }
+
+    onNavigate('contacts')
   }
 
-  function handlePauseScraping() {
-    setScrapingStatus('paused')
-    messageService.send(MessageType.SCRAPING_PAUSE, { invId: invIdRef.current }).catch(() => {})
-  }
-
-  function handleResumeScraping() {
-    setScrapingStatus('running')
-    messageService.send(MessageType.SCRAPING_RESUME, { invId: invIdRef.current }).catch(() => {})
-  }
-
-  function handleCancelScraping() {
-    messageService.send(MessageType.SCRAPING_CANCEL, { invId: invIdRef.current }).catch(() => {})
-    setScrapingStatus('idle')
-    setPhase('report')
+  /** Called by the main CTA button. */
+  async function handleAcceptAndContinue() {
+    if (!description.trim()) return
+    setError('')
+    if (generateReport) {
+      // Analyze → show report modal → user confirms → start scraping
+      await handleAnalyze()
+    } else {
+      // Skip report — create invId and go straight to contacts
+      const invId = startInvestigation(description.trim(), consistency[0])
+      currentInvIdRef.current = invId
+      await handleStartScraping(invId)
+    }
   }
 
   const consistencyLabel =
@@ -350,7 +294,45 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
   const ringOffset = RING_C * (1 - ringFill)
   const barFillPct = isInfinite ? 100 : Math.min(displayPercent, 100)
 
-  // ── ANALYZING PHASE ──
+  // ── Max contacts allowed by current energy (send power) ──────────────────
+  // totalActions = displayPercent * 10 → at 100 % energy = 1 000 contacts max
+  const maxAllowedContacts = isInfinite
+    ? 1000
+    : Math.min(Math.max(Math.floor(totalActions), 0), 1000)
+  const contactSliderDisabled = !isInfinite && maxAllowedContacts < 10
+
+  // Clamp current selection if energy drops below it
+  useEffect(() => {
+    if (!isInfinite && targetScrapeCount[0] > maxAllowedContacts && maxAllowedContacts >= 10) {
+      setTargetScrapeCount([maxAllowedContacts])
+    }
+  }, [maxAllowedContacts, isInfinite]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Recharge animation tick ──────────────────────────────────────────────
+  useEffect(() => {
+    if (rechargeAnimPct === null) return
+    if (rechargeAnimPct >= barFillPct) {
+      const done = setTimeout(() => setRechargeAnimPct(null), 600)
+      return () => clearTimeout(done)
+    }
+    const tick = setTimeout(() => {
+      setRechargeAnimPct((prev) => (prev !== null ? Math.min(prev + 1.5, barFillPct) : null))
+    }, 35)
+    return () => clearTimeout(tick)
+  }, [rechargeAnimPct, barFillPct])
+
+  // Use animated pct when running, otherwise real pct — kept for future re-enable
+  // const activeFillPct = rechargeAnimPct !== null ? rechargeAnimPct : barFillPct
+
+  // function handleRechargeClick() {
+  //   if (isDev) {
+  //     setRechargeAnimPct(0)
+  //   } else {
+  //     setPaymentModalOpen(true)
+  //   }
+  // }
+
+  // ── ANALYZING (spinner overlay) ──────────────────────────────────────────
   if (phase === 'analyzing') {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4 py-12">
@@ -374,287 +356,128 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
     )
   }
 
-  // ── SCRAPING PHASE ──
-  if (phase === 'scraping') {
-    const progressPct =
-      scrapeProgress.total > 0
-        ? Math.round((scrapeProgress.current / scrapeProgress.total) * 100)
-        : 0
-    const liveContacts = invIdRef.current
-      ? allContacts.filter((c) => c.investigationId === invIdRef.current)
-      : []
-    return (
-      <div className="flex-1 flex flex-col gap-4">
-        <div className="flex flex-col items-center gap-3 py-6">
-          <div className="relative">
-            <div className="w-16 h-16 rounded-full bg-accent flex items-center justify-center">
-              <Globe className="w-7 h-7 text-primary" />
-            </div>
-            <div className="absolute inset-0 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-          </div>
-          <div className="text-center space-y-1">
-            <p className="text-sm font-medium">
-              {scrapingStatus === 'paused'
-                ? t('investigation.scrapingPaused')
-                : t('investigation.scraping')}
-            </p>
-            <p className="text-xs text-muted-foreground">{t('investigation.scrapingSubtext')}</p>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-          <div className="space-y-1.5">
-            <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">{t('investigation.sitesScanned')}</span>
-              <span className="font-medium tabular-nums">
-                {scrapeProgress.current}/{scrapeProgress.total || '…'}
-              </span>
-            </div>
-            <Progress value={progressPct} className="h-1.5" />
-          </div>
-
-          {scrapeProgress.currentUrl && (
-            <div className="flex items-center gap-2">
-              <Search className="w-3 h-3 shrink-0 text-primary animate-pulse" />
-              <span className="text-xs text-muted-foreground truncate">
-                {scrapeProgress.currentUrl}
-              </span>
-            </div>
-          )}
-
-          <div className="flex items-center justify-between border-t border-border/60 pt-2">
-            <span className="text-xs text-muted-foreground">
-              {t('investigation.contactsFound')}
-            </span>
-            <span className="text-sm font-bold text-primary tabular-nums">{contactsFound}</span>
-          </div>
-        </div>
-
-        <div className="rounded-lg bg-muted/40 px-3 py-2.5">
-          <p className="text-[11px] text-muted-foreground text-center leading-relaxed">
-            {t('investigation.scrapingNotice')}
-          </p>
-        </div>
-
-        {/* ── Live contacts cascade list ── */}
-        {liveContacts.length > 0 && (
-          <div className="rounded-xl border border-border bg-card overflow-hidden">
-            <div className="px-3 py-2 border-b border-border/50 flex items-center justify-between">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
-                <Users className="w-3 h-3" />
-                Contactos encontrados
-              </span>
-              <span className="text-xs font-bold text-primary tabular-nums">
-                {liveContacts.length}
-              </span>
-            </div>
-            <div className="max-h-52 overflow-y-auto divide-y divide-border/30">
-              {liveContacts
-                .slice()
-                .reverse()
-                .map((c) => (
-                  <div key={c.id} className="flex items-center gap-2 px-3 py-2 animate-fade-in">
-                    <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                      <User className="w-3 h-3 text-primary" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-medium truncate">{c.organization || c.name}</p>
-                      <p className="text-[10px] text-muted-foreground truncate">{c.email}</p>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </div>
-        )}
-
-        {/* ── Pause / Cancel controls ── */}
-        <div className="flex gap-2">
-          {scrapingStatus === 'running' ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className="flex-1 h-9 text-xs gap-1.5"
-              onClick={handlePauseScraping}
-            >
-              <Pause className="w-3 h-3" />
-              {t('investigation.pauseScraping')}
-            </Button>
-          ) : scrapingStatus === 'paused' ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className="flex-1 h-9 text-xs gap-1.5 border-primary/40 text-primary"
-              onClick={handleResumeScraping}
-            >
-              <Play className="w-3 h-3" />
-              {t('investigation.resumeScraping')}
-            </Button>
-          ) : null}
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-1 h-9 text-xs gap-1.5 border-destructive/40 text-destructive hover:bg-destructive/10"
-            onClick={handleCancelScraping}
-          >
-            <Square className="w-3 h-3" />
-            {t('investigation.cancelScraping')}
-          </Button>
-        </div>
-      </div>
-    )
-  }
-
-  // ── REPORT PHASE ──
-  if (phase === 'report') {
-    return (
-      <TooltipProvider delayDuration={300}>
-        <div className="flex-1 flex flex-col gap-3">
-          <button
-            type="button"
-            onClick={() => setPhase('form')}
-            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors self-start"
-          >
-            <ChevronLeft className="w-3.5 h-3.5" />
-            {t('investigation.modifyFilters')}
-          </button>
-
-          <div ref={reportRef} className="rounded-xl border border-border bg-card px-5 py-4">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                h1: ({ children }) => (
-                  <h1 className="text-sm font-bold text-foreground mb-3 pb-2 border-b border-border">
-                    {children}
-                  </h1>
-                ),
-                h2: ({ children }) => (
-                  <h2 className="text-xs font-semibold text-foreground mt-4 mb-1.5">{children}</h2>
-                ),
-                h3: ({ children }) => (
-                  <h3 className="text-[11px] font-semibold text-primary mt-2 mb-1 uppercase tracking-wide">
-                    {children}
-                  </h3>
-                ),
-                p: ({ children }) => (
-                  <p className="text-xs text-foreground leading-relaxed mb-2">{children}</p>
-                ),
-                ul: ({ children }) => <ul className="mb-2 ml-1 space-y-0.5">{children}</ul>,
-                ol: ({ children }) => (
-                  <ol className="mb-2 ml-3 space-y-0.5 list-decimal">{children}</ol>
-                ),
-                li: ({ children }) => (
-                  <li className="text-xs text-foreground flex gap-1.5 items-start">
-                    <span className="text-primary mt-[3px] shrink-0">▸</span>
-                    <span>{children}</span>
-                  </li>
-                ),
-                strong: ({ children }) => (
-                  <strong className="font-semibold text-foreground">{children}</strong>
-                ),
-                em: ({ children }) => (
-                  <em className="text-muted-foreground not-italic text-[10px]">{children}</em>
-                ),
-                hr: () => <hr className="border-border my-3" />,
-                table: ({ children }) => (
-                  <div className="overflow-x-auto mb-3 rounded-lg border border-border">
-                    <table className="w-full text-xs border-collapse">{children}</table>
-                  </div>
-                ),
-                thead: ({ children }) => <thead className="bg-accent">{children}</thead>,
-                tbody: ({ children }) => <tbody>{children}</tbody>,
-                tr: ({ children }) => (
-                  <tr className="border-b border-border last:border-0">{children}</tr>
-                ),
-                th: ({ children }) => (
-                  <th className="text-left px-3 py-2 font-semibold text-[10px] uppercase tracking-wide text-accent-foreground">
-                    {children}
-                  </th>
-                ),
-                td: ({ children }) => (
-                  <td className="px-3 py-1.5 text-xs text-muted-foreground">{children}</td>
-                ),
-                blockquote: ({ children }) => (
-                  <blockquote className="border-l-2 border-primary pl-3 my-2 text-xs text-muted-foreground italic">
-                    {children}
-                  </blockquote>
-                ),
-                code: ({ children }) => (
-                  <code className="bg-muted px-1.5 py-0.5 rounded text-[10px] font-mono text-primary">
-                    {children}
-                  </code>
-                ),
-              }}
-            >
-              {reportMarkdown}
-            </ReactMarkdown>
-          </div>
-
-          <div className="flex flex-col gap-2">
-            {/* ── Target count slider ── */}
-            <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-                    {t('investigation.targetCountLabel')}
-                  </p>
-                  <InfoTip text={t('investigation.targetCountTooltip')} />
-                </div>
-                <Badge variant="outline" className="font-mono text-xs h-5 px-1.5 shrink-0">
-                  {targetScrapeCount[0].toLocaleString()}
-                </Badge>
-              </div>
-              <Slider
-                value={targetScrapeCount}
-                onValueChange={setTargetScrapeCount}
-                min={10}
-                max={1000}
-                step={10}
-                className="h-1"
-              />
-              <div className="flex justify-between text-[10px] text-muted-foreground">
-                <span>10</span>
-                <span>500</span>
-                <span>1,000</span>
-              </div>
-              {!isInfinite && targetScrapeCount[0] > energy.current && (
-                <div className="flex items-center gap-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 px-2.5 py-2">
-                  <Zap className="w-3 h-3 text-amber-500 shrink-0" />
-                  <p className="text-[11px] text-amber-600 leading-tight">
-                    {t('investigation.energyWarning', {
-                      total: targetScrapeCount[0],
-                      available: energy.current,
-                    })}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            <Button
-              onClick={handleStartScraping}
-              className="w-full h-11 font-semibold gap-2 text-sm"
-            >
-              <Globe className="w-4 h-4" />
-              {t('investigation.searchContacts')}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setLastAnalysisMarkdown(reportMarkdown)
-                onNavigate('contacts')
-              }}
-              className="w-full h-9 text-xs gap-1.5"
-            >
-              {t('investigation.skipToContacts')}
-              <ArrowRight className="w-3.5 h-3.5" />
-            </Button>
-          </div>
-        </div>
-      </TooltipProvider>
-    )
-  }
+  // ── FORM (main view) ─────────────────────────────────────────────────────
   return (
     <TooltipProvider delayDuration={300}>
       <div className="flex-1 flex flex-col gap-3 min-h-0">
+        {/* ── Energy Progress Bar — Battle.net style (simeydotme/abPxRE) — HIDDEN ──
+        <div className="shrink-0 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <Zap className={`w-3 h-3 ${eTheme.textClass}`} />
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                {t('investigation.energyLabel')}
+              </span>
+              <span
+                className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${eTheme.borderClass} ${eTheme.textClass} bg-primary/5`}
+              >
+                {eTheme.label}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleRechargeClick}
+              className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-all
+                bg-emerald-500/15 text-emerald-400 border border-emerald-500/40
+                hover:bg-emerald-500/25 hover:border-emerald-400 hover:text-emerald-300
+                active:scale-95"
+            >
+              <Zap className="w-2.5 h-2.5" />
+              {isDev ? 'Simular recarga' : 'Recargar Energía'}
+            </button>
+          </div>
+          <div
+            className={[
+              'bnet-progress',
+              activeFillPct > 0 || isInfinite ? 'bnet-progress--active' : '',
+              isInfinite || activeFillPct >= 100 ? 'bnet-progress--complete' : '',
+            ].join(' ')}
+          >
+            <b
+              className={`bnet-progress__bar ${getBnetBarColorClass(activeFillPct, isInfinite)}`}
+              style={{ width: isInfinite ? '100%' : `${activeFillPct}%` }}
+            >
+              <span className="bnet-progress__text">
+                {t('investigation.energyLabel')}: <em>{isInfinite ? '∞' : `${Math.round(activeFillPct)}%`}</em>
+              </span>
+            </b>
+          </div>
+        </div>
+        ── END HIDDEN ── */}
+
+        {/* ── Payment modal (production mode) ── */}
+        <Dialog open={paymentModalOpen} onOpenChange={setPaymentModalOpen}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Zap className="w-4 h-4 text-emerald-400" />
+                Recargar Energía
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 pt-1">
+              <p className="text-xs text-muted-foreground">
+                Adquiere más energía para continuar con tus campañas de Vibe Reach.
+              </p>
+
+              {/* Plan selector */}
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: '1 000', energy: '1k', price: '€4,99' },
+                  { label: '5 000', energy: '5k', price: '€17,99', highlight: true },
+                  { label: '15 000', energy: '15k', price: '€39,99' },
+                ].map(({ label, energy: e, price, highlight }) => (
+                  <div
+                    key={e}
+                    className={`relative flex flex-col items-center gap-0.5 rounded-xl border p-3 text-center ${
+                      highlight
+                        ? 'border-emerald-500/60 bg-emerald-500/10'
+                        : 'border-border bg-card'
+                    }`}
+                  >
+                    {highlight && (
+                      <span className="absolute -top-2 left-1/2 -translate-x-1/2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-500 text-black">
+                        Popular
+                      </span>
+                    )}
+                    <Zap
+                      className={`w-4 h-4 ${highlight ? 'text-emerald-400' : 'text-muted-foreground'}`}
+                    />
+                    <span className="text-xs font-bold text-foreground">{label}</span>
+                    <span className="text-[10px] text-muted-foreground">energía</span>
+                    <span
+                      className={`text-sm font-extrabold mt-1 ${highlight ? 'text-emerald-400' : 'text-foreground'}`}
+                    >
+                      {price}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Card placeholder */}
+              <div className="rounded-xl border border-border bg-muted/30 p-3 space-y-2">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <CreditCard className="w-3.5 h-3.5" />
+                  Tarjeta de crédito / débito
+                </div>
+                <div className="h-8 rounded-md bg-muted/60 border border-border" />
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="h-8 rounded-md bg-muted/60 border border-border" />
+                  <div className="h-8 rounded-md bg-muted/60 border border-border" />
+                </div>
+              </div>
+
+              <Button disabled className="w-full gap-2 opacity-60 cursor-not-allowed">
+                <Lock className="w-3.5 h-3.5" />
+                Pago seguro — Próximamente
+              </Button>
+
+              <p className="text-center text-[10px] text-muted-foreground">
+                Procesado por Stripe · SSL 256-bit
+              </p>
+            </div>
+          </DialogContent>
+        </Dialog>
+
         {/* ── Card 1: Energy module ── */}
         <Card
           className="relative overflow-hidden shrink-0"
@@ -672,7 +495,7 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
             {/* ── TOP ROW: ring (left) | info (center) | badges (right) ── */}
             <div className="flex items-start gap-3">
               {/* Circular ring */}
-              <div className="relative w-[100px] h-auto aspect-square shrink-0">
+              <div className="relative w-25 h-auto aspect-square shrink-0">
                 <svg viewBox="0 0 48 48" className="w-full h-full -rotate-90" fill="none">
                   <circle
                     cx="24"
@@ -733,7 +556,7 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
                   </div>
                   <Badge
                     variant="outline"
-                    className="text-[9px] h-[18px] px-1.5 shrink-0 border-primary/30 text-primary"
+                    className="text-[9px] h-4.5 px-1.5 shrink-0 border-primary/30 text-primary"
                   >
                     AI ✦
                   </Badge>
@@ -753,7 +576,7 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
                   {!isInfinite && energyPercent < 100 && (
                     <button
                       type="button"
-                      onClick={() => refill(energy.max - energy.current)}
+                      onClick={() => refill((energy.max ?? 1000) - (energy.current ?? 0))}
                       className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground border border-border rounded-md px-2 py-0.5 transition-colors hover:border-foreground/40"
                     >
                       <RefreshCcw className="w-2.5 h-2.5" />
@@ -773,7 +596,7 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
                   {bonusPercent > 0 && (
                     <Badge
                       variant="outline"
-                      className="text-[9px] h-[18px] px-1.5 text-primary border-primary/40"
+                      className="text-[9px] h-4.5 px-1.5 text-primary border-primary/40"
                     >
                       +{bonusPercent}% extra
                     </Badge>
@@ -782,7 +605,7 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
               </div>
 
               {/* RIGHT: stacked LED feature badges */}
-              <div className="flex flex-col gap-1.5 shrink-0 items-stretch w-[110px]">
+              <div className="flex flex-col gap-1.5 shrink-0 items-stretch w-27.5">
                 {(
                   [
                     {
@@ -1005,7 +828,103 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
           </CardContent>
         </Card>
 
-        {/* ── Card 3: Details + CTA ── */}
+        {/* ── Card 3: Scraping Mode ── */}
+        <Card className="shrink-0">
+          <CardContent className="p-4 space-y-3">
+            <div className="flex items-center gap-1.5">
+              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                {t('investigation.scrapingMode')}
+              </p>
+              <InfoTip text={t('investigation.scrapingModeTooltip')} />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setScrapingMode('fast')}
+                className={`flex flex-col items-center gap-1 rounded-lg border p-3 text-center transition-colors ${
+                  scrapingMode === 'fast'
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border hover:border-muted-foreground/30'
+                }`}
+              >
+                <Zap className="w-4 h-4" />
+                <span className="text-xs font-semibold">{t('investigation.scrapingModeFast')}</span>
+                <span className="text-[10px] text-muted-foreground leading-snug">
+                  {t('investigation.scrapingModeFastDesc')}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setScrapingMode('precise')}
+                className={`flex flex-col items-center gap-1 rounded-lg border p-3 text-center transition-colors ${
+                  scrapingMode === 'precise'
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border hover:border-muted-foreground/30'
+                }`}
+              >
+                <Bot className="w-4 h-4" />
+                <span className="text-xs font-semibold">
+                  {t('investigation.scrapingModePrecise')}
+                </span>
+                <span className="text-[10px] text-muted-foreground leading-snug">
+                  {t('investigation.scrapingModePreciseDesc')}
+                </span>
+              </button>
+            </div>
+
+            {/* Target count */}
+            <div className="pt-1 space-y-2 border-t border-border/40">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                    {t('investigation.targetCountLabel')}
+                  </p>
+                  <InfoTip text={t('investigation.targetCountTooltip')} />
+                </div>
+                <Badge variant="outline" className="font-mono text-xs h-5 px-1.5 shrink-0">
+                  {targetScrapeCount[0].toLocaleString()}
+                </Badge>
+              </div>
+              <Slider
+                value={targetScrapeCount}
+                onValueChange={setTargetScrapeCount}
+                min={10}
+                max={Math.max(10, maxAllowedContacts)}
+                step={10}
+                className={`h-1 ${contactSliderDisabled ? 'opacity-40 cursor-not-allowed pointer-events-none' : ''}`}
+                disabled={contactSliderDisabled}
+              />
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>10</span>
+                <span>{Math.floor(maxAllowedContacts / 2).toLocaleString()}</span>
+                <span>{maxAllowedContacts.toLocaleString()}</span>
+              </div>
+              {contactSliderDisabled && (
+                <div className="flex items-center gap-1.5 rounded-lg bg-destructive/10 border border-destructive/30 px-2.5 py-2">
+                  <Zap className="w-3 h-3 text-destructive shrink-0" />
+                  <p className="text-[11px] text-destructive leading-tight">
+                    Sin energía disponible. Recarga para desbloquear el selector.
+                  </p>
+                </div>
+              )}
+              {!contactSliderDisabled &&
+                !isInfinite &&
+                targetScrapeCount[0] > (energy.current ?? 0) && (
+                  <div className="flex items-center gap-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 px-2.5 py-2">
+                    <Zap className="w-3 h-3 text-amber-500 shrink-0" />
+                    <p className="text-[11px] text-amber-600 leading-tight">
+                      {t('investigation.energyWarning', {
+                        total: targetScrapeCount[0],
+                        available: energy.current,
+                      })}
+                    </p>
+                  </div>
+                )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* ── Card 4: Details + CTA ── */}
         <Card className="flex-1 flex flex-col min-h-0">
           <CardContent className="flex-1 flex flex-col gap-3 p-4 min-h-0">
             <div className="flex items-center gap-1.5 shrink-0">
@@ -1015,7 +934,7 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
               <InfoTip text={t('investigation.descriptionTooltip')} />
             </div>
 
-            {phase === 'error' && (
+            {error && (
               <div className="shrink-0 flex items-start gap-2 p-2.5 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive">
                 <XCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
                 <p className="text-xs">{error}</p>
@@ -1026,7 +945,7 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder={t('investigation.descriptionPlaceholder')}
-              className="flex-1 min-h-[120px] resize-none text-xs leading-relaxed"
+              className="flex-1 min-h-30 resize-none text-xs leading-relaxed"
             />
 
             {!apiKey && (
@@ -1038,16 +957,175 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
           </CardContent>
         </Card>
 
+        {/* ── Report toggle ── */}
+        <div className="shrink-0 flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+          <div className="flex items-center gap-2">
+            <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+            <div>
+              <p className="text-xs font-medium">{t('investigation.generateReport')}</p>
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                {t('investigation.generateReportDesc')}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={generateReport}
+            onClick={() => setGenerateReport((v) => !v)}
+            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+              generateReport ? 'bg-primary' : 'bg-muted-foreground/30'
+            }`}
+          >
+            <span
+              className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-lg ring-0 transition-transform ${
+                generateReport ? 'translate-x-4' : 'translate-x-0'
+              }`}
+            />
+          </button>
+        </div>
+
+        {/* ── View last saved report pill ── */}
+        {lastAnalysisMarkdown && (
+          <button
+            type="button"
+            onClick={() => {
+              setReportMarkdown(lastAnalysisMarkdown)
+              setReportModalOpen(true)
+            }}
+            className="shrink-0 flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 text-primary px-3 py-2 text-xs font-medium hover:bg-primary/10 transition-colors"
+          >
+            <FileText className="w-3 h-3 shrink-0" />
+            <span className="flex-1 text-left">{t('investigation.viewLastReport')}</span>
+            <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+          </button>
+        )}
+
         <Button
-          onClick={handleAnalyze}
-          disabled={!description.trim() || !apiKey}
+          onClick={handleAcceptAndContinue}
+          disabled={!description.trim() || (!generateReport ? false : !apiKey)}
           className="shrink-0 w-full h-11 font-semibold gap-2 text-sm"
         >
-          <Sparkles className="w-4 h-4" />
-          {t('investigation.acceptAndContinue')}
+          {generateReport ? <Sparkles className="w-4 h-4" /> : <Globe className="w-4 h-4" />}
+          {generateReport
+            ? t('investigation.analyzeAndSearch')
+            : t('investigation.acceptAndContinue')}
           <ArrowRight className="w-4 h-4" />
         </Button>
       </div>
+
+      {/* ── AI Report Modal (full-panel overlay) ── */}
+      {reportModalOpen && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-background">
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-primary" />
+              <h3 className="text-sm font-semibold">{t('investigation.reportModalTitle')}</h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReportModalOpen(false)}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Scrollable report content */}
+          <div className="flex-1 overflow-y-auto px-5 py-4">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                h1: ({ children }) => (
+                  <h1 className="text-sm font-bold text-foreground mb-3 pb-2 border-b border-border">
+                    {children}
+                  </h1>
+                ),
+                h2: ({ children }) => (
+                  <h2 className="text-xs font-semibold text-foreground mt-4 mb-1.5">{children}</h2>
+                ),
+                h3: ({ children }) => (
+                  <h3 className="text-[11px] font-semibold text-primary mt-2 mb-1 uppercase tracking-wide">
+                    {children}
+                  </h3>
+                ),
+                p: ({ children }) => (
+                  <p className="text-xs text-foreground leading-relaxed mb-2">{children}</p>
+                ),
+                ul: ({ children }) => <ul className="mb-2 ml-1 space-y-0.5">{children}</ul>,
+                ol: ({ children }) => (
+                  <ol className="mb-2 ml-3 space-y-0.5 list-decimal">{children}</ol>
+                ),
+                li: ({ children }) => (
+                  <li className="text-xs text-foreground flex gap-1.5 items-start">
+                    <span className="text-primary mt-0.75 shrink-0">▸</span>
+                    <span>{children}</span>
+                  </li>
+                ),
+                strong: ({ children }) => (
+                  <strong className="font-semibold text-foreground">{children}</strong>
+                ),
+                em: ({ children }) => (
+                  <em className="text-muted-foreground not-italic text-[10px]">{children}</em>
+                ),
+                hr: () => <hr className="border-border my-3" />,
+                table: ({ children }) => (
+                  <div className="overflow-x-auto mb-3 rounded-lg border border-border">
+                    <table className="w-full text-xs border-collapse">{children}</table>
+                  </div>
+                ),
+                thead: ({ children }) => <thead className="bg-accent">{children}</thead>,
+                tbody: ({ children }) => <tbody>{children}</tbody>,
+                tr: ({ children }) => (
+                  <tr className="border-b border-border last:border-0">{children}</tr>
+                ),
+                th: ({ children }) => (
+                  <th className="text-left px-3 py-2 font-semibold text-[10px] uppercase tracking-wide text-accent-foreground">
+                    {children}
+                  </th>
+                ),
+                td: ({ children }) => (
+                  <td className="px-3 py-1.5 text-xs text-muted-foreground">{children}</td>
+                ),
+                blockquote: ({ children }) => (
+                  <blockquote className="border-l-2 border-primary pl-3 my-2 text-xs text-muted-foreground italic">
+                    {children}
+                  </blockquote>
+                ),
+                code: ({ children }) => (
+                  <code className="bg-muted px-1.5 py-0.5 rounded text-[10px] font-mono text-primary">
+                    {children}
+                  </code>
+                ),
+              }}
+            >
+              {reportMarkdown}
+            </ReactMarkdown>
+          </div>
+
+          {/* Footer: start search */}
+          <div className="shrink-0 px-4 py-3 border-t border-border space-y-2">
+            <Button
+              className="w-full h-11 font-semibold gap-2 text-sm"
+              onClick={async () => {
+                setReportModalOpen(false)
+                await handleStartScraping(currentInvIdRef.current)
+              }}
+            >
+              <Globe className="w-4 h-4" />
+              {t('investigation.startSearchFromReport')}
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full h-9 text-xs gap-1.5"
+              onClick={() => setReportModalOpen(false)}
+            >
+              {t('investigation.modifyFilters')}
+            </Button>
+          </div>
+        </div>
+      )}
     </TooltipProvider>
   )
 }

@@ -23,6 +23,9 @@ import {
   Folder,
   AlertTriangle,
   Monitor,
+  Zap,
+  RefreshCcw,
+  Minus,
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@components/ui/card'
 import { Button } from '@components/ui/button'
@@ -48,6 +51,7 @@ import { useSettingsStore } from '@store/settings.store'
 import { useBusinessStore } from '@store/business.store'
 import { useRuntimeStore } from '@store/runtime.store'
 import { useTheme } from '@hooks/useTheme'
+import { useEnergy } from '@hooks/useEnergy'
 import { THEME_DEFINITIONS, THEME_IDS } from '@core/config/theme.config'
 import { testAIConnection } from '@services/ai.service'
 import type { AIProviderType } from '@core/types/ai.types'
@@ -166,6 +170,17 @@ export function SettingsView({ onNavigate: _ }: SettingsViewProps) {
   // Runtime store (developer-only)
   const { mode: runtimeMode, setMode: setRuntimeMode } = useRuntimeStore()
 
+  // Energy (developer-only)
+  const {
+    energy,
+    energyPercent,
+    isInfinite,
+    refill: refillEnergy,
+    reset: resetEnergy,
+    setInfinite,
+    consume: consumeEnergy,
+  } = useEnergy()
+
   // Local UI state
   const [showKeys, setShowKeys] = useState<Record<AIProviderType, boolean>>(
     {} as Record<AIProviderType, boolean>,
@@ -216,18 +231,6 @@ export function SettingsView({ onNavigate: _ }: SettingsViewProps) {
       /* ignore */
     }
     e.target.value = ''
-  }
-
-  async function handlePickFolder() {
-    try {
-      // showDirectoryPicker is available in modern browsers
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
-      setSavedFolderPath(handle.name as string)
-      setDownloadFolder(handle.name as string)
-    } catch {
-      // User cancelled or API not available – fall back to manual input
-    }
   }
 
   const sortedConfigs = [...configs].sort((a, b) => a.priority - b.priority)
@@ -747,9 +750,76 @@ export function SettingsView({ onNavigate: _ }: SettingsViewProps) {
         </Card>
       )}
 
-      <Separator />
+      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ ENERGY DEBUG (debug only) */}
+      {debugMode && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Zap className="w-4 h-4 text-primary" />
+              Energía — Debug
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              {isInfinite
+                ? '∞ modo infinito activo'
+                : `${energy.current} / ${energy.max} unidades · ${energyPercent}%`}
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-xs h-8"
+                onClick={() => refillEnergy(energy.max)}
+              >
+                <RefreshCcw className="w-3 h-3" />
+                Rellenar al máximo
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-xs h-8"
+                onClick={() => consumeEnergy('scrapeUrl', 100)}
+                disabled={energy.current < 100}
+              >
+                <Minus className="w-3 h-3" />
+                −100
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-xs h-8"
+                onClick={() => consumeEnergy('scrapeUrl', 500)}
+                disabled={energy.current < 500}
+              >
+                <Minus className="w-3 h-3" />
+                −500
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-xs h-8"
+                onClick={() => resetEnergy()}
+              >
+                Reset
+              </Button>
+            </div>
+            <div className="flex items-center justify-between pt-1 border-t border-border/40">
+              <p className="text-xs text-muted-foreground">Modo infinito</p>
+              <Button
+                size="sm"
+                variant={isInfinite ? 'default' : 'outline'}
+                className="text-xs h-7 px-3"
+                onClick={() => setInfinite(!isInfinite)}
+              >
+                {isInfinite ? '∞ Activo' : 'Activar ∞'}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
-      {/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4. EXPORT & DOWNLOADS ━━━━━━ */}
+      <Separator />
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2">
@@ -761,29 +831,17 @@ export function SettingsView({ onNavigate: _ }: SettingsViewProps) {
           {/* Folder picker */}
           <div className="space-y-1.5">
             <Label className="text-xs">{t('settings.export.folder')}</Label>
-            <div className="flex gap-2">
-              <div className="flex-1 relative">
-                <Folder className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-                <Input
-                  value={savedFolderPath || downloadFolder}
-                  onChange={(e) => {
-                    setSavedFolderPath('')
-                    setDownloadFolder(e.target.value)
-                  }}
-                  placeholder="Vibe Informes"
-                  className="h-9 pl-8 text-xs"
-                />
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-9 px-3 text-xs gap-1.5 shrink-0"
-                onClick={handlePickFolder}
-                title="Seleccionar carpeta"
-              >
-                <Folder className="w-3.5 h-3.5" />
-                {t('settings.export.selectFolder')}
-              </Button>
+            <div className="relative">
+              <Folder className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <Input
+                value={savedFolderPath || downloadFolder}
+                onChange={(e) => {
+                  setSavedFolderPath('')
+                  setDownloadFolder(e.target.value)
+                }}
+                placeholder="Vibe Informes"
+                className="h-9 pl-8 text-xs"
+              />
             </div>
             <p className="text-[10px] text-muted-foreground">
               {savedFolderPath

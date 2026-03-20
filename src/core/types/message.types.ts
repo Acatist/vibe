@@ -104,16 +104,19 @@ export interface MessagePayloadMap {
     country: string
     language: string
     contactType: string
+    scrapingMode: 'fast' | 'precise'
+    consistency: number // 1-10
   }
   [MessageType.SCRAPING_PAUSE]: { invId: string }
   [MessageType.SCRAPING_RESUME]: { invId: string }
   [MessageType.SCRAPING_CANCEL]: { invId: string }
   [MessageType.SCRAPING_PROGRESS]: {
     invId: string
-    phase: 'google' | 'contacts'
+    phase: 'seeding' | 'google' | 'contacts'
     currentUrl: string
     urlsFound: number
     contactsFound: number
+    discardedCount: number
     targetCount: number
     pagesScanned: number
     energyLeft: number
@@ -131,14 +134,27 @@ export interface MessagePayloadMap {
       specialization: string
       topics: string[]
       region: string
+      discoveryScore: number
+      classification: 'high' | 'medium' | 'low'
+      matchSignals: string[]
+      /** true when the contact didn't meet the acceptance threshold */
+      discarded?: boolean
     }
   }
   [MessageType.SCRAPING_COMPLETE]: {
     invId: string
     totalContacts: number
+    totalDiscarded: number
     totalPagesScanned: number
     energyConsumed: number
     durationMs: number
+    /** If scraping ended early due to a stall / tab crash / exhaustion */
+    finishReason?:
+      | 'target-reached'
+      | 'energy-exhausted'
+      | 'queries-exhausted'
+      | 'stalled'
+      | 'max-pages'
   }
   [MessageType.SCRAPING_ERROR]: {
     invId: string

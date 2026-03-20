@@ -18,17 +18,28 @@ export const useContactsStore = create<ContactsStore>()(
       contacts: [],
 
       addContacts: (newContacts) =>
-        set((s) => ({
-          contacts: [
-            ...s.contacts,
-            ...newContacts.filter((nc) => !s.contacts.some((c) => c.id === nc.id)),
-          ],
-        })),
+        set((s) => {
+          // Deduplicate by both id AND email (case-insensitive)
+          const existingIds = new Set(s.contacts.map((c) => c.id))
+          const existingEmails = new Set(s.contacts.map((c) => c.email.toLowerCase().trim()))
+          const fresh = newContacts.filter(
+            (nc) => !existingIds.has(nc.id) && !existingEmails.has(nc.email.toLowerCase().trim()),
+          )
+          return { contacts: [...s.contacts, ...fresh] }
+        }),
 
       addContact: (contact) =>
-        set((s) => ({
-          contacts: [...s.contacts, contact],
-        })),
+        set((s) => {
+          // Prevent duplicate email
+          if (
+            s.contacts.some(
+              (c) => c.email.toLowerCase().trim() === contact.email.toLowerCase().trim(),
+            )
+          ) {
+            return s
+          }
+          return { contacts: [...s.contacts, contact] }
+        }),
 
       updateContact: (id, updates) =>
         set((s) => ({

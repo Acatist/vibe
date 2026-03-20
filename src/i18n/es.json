@@ -90,11 +90,23 @@
     "sendPower": "Potencia de envío",
     "targetCountLabel": "Objetivo de Contactos",
     "targetCountTooltip": "Define cuántos contactos deseas descubrir. Cada página visitada cuesta 1 unidad de energía — 10 páginas = 1% de energía. Mín. 10, máx. 1.000.",
+    "scrapingMode": "Modo de Rastreo",
+    "scrapingModeTooltip": "Rápido usa señales de palabras clave (sin llamadas AI por página). Preciso usa IA para sembrar y evaluar cada candidato.",
+    "scrapingModeFast": "Rápido",
+    "scrapingModePrecise": "Preciso",
+    "scrapingModeFastDesc": "Señales de palabras clave, sin API",
+    "scrapingModePreciseDesc": "Siembra IA + evaluación por página",
     "pauseScraping": "Pausar",
     "resumeScraping": "Reanudar",
     "cancelScraping": "Cancelar",
     "scrapingPaused": "Pausado — Clic en Reanudar",
-    "energyWarning": "Solo {{available}} unidades de energía disponibles. Se solicitaron {{total}} contactos — el rastreo se detendrá cuando se agote la energía."
+    "energyWarning": "Solo {{available}} unidades de energía disponibles. Se solicitaron {{total}} contactos — el rastreo se detendrá cuando se agote la energía.",
+    "generateReport": "Informe de análisis IA",
+    "generateReportDesc": "Obtén un análisis estratégico antes de buscar",
+    "viewLastReport": "Ver último informe de análisis",
+    "analyzeAndSearch": "Analizar y Buscar",
+    "reportModalTitle": "Informe de Inteligencia de Campaña",
+    "startSearchFromReport": "Buscar Contactos"
   },
   "contacts": {
     "title": "Contactos",
@@ -291,7 +303,7 @@
     "export": {
       "title": "Exportación y Descargas",
       "folder": "Carpeta de guardado de informes",
-      "folderHint": "Pulsa \"Seleccionar\" para elegir una carpeta en tu ordenador, o escribe el nombre manualmente.",
+      "folderHint": "Nombre de subcarpeta dentro de tu carpeta Descargas. Déjalo vacío para guardar directamente en Descargas.",
       "folderSelected": "Carpeta seleccionada: {{name}}",
       "selectFolder": "Seleccionar",
       "prefix": "Prefijo del nombre de archivo",

@@ -23,6 +23,8 @@ import {
   Mail,
   Loader2,
   Sparkles,
+  Trash2,
+  AlertTriangle,
 } from 'lucide-react'
 import { Button } from '@components/ui/button'
 import { Input } from '@components/ui/input'
@@ -482,16 +484,54 @@ interface CampaignsViewProps {
 
 export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
   const { t } = useTranslation()
-  const { campaigns: storeCampaigns } = useCampaignStore()
-  const { contacts: allContacts } = useContactsStore()
+  const { campaigns: storeCampaigns, deleteCampaign, clearAllCampaigns } = useCampaignStore()
+  const { contacts: allContacts, deleteContact } = useContactsStore()
 
   // Use real campaigns if available, otherwise show demo data
   const realCampaigns = storeCampaigns.map((c) => realCampaignToMock(c, allContacts))
-  const allCampaigns = realCampaigns.length > 0 ? realCampaigns : MOCK_CAMPAIGNS
+  const hasRealCampaigns = realCampaigns.length > 0
+
+  const [hiddenMockIds, setHiddenMockIds] = useState<Set<string>>(new Set())
+  const allCampaigns = hasRealCampaigns
+    ? realCampaigns
+    : MOCK_CAMPAIGNS.filter((c) => !hiddenMockIds.has(c.id))
 
   const [tab, setTab] = useState<'all' | 'running' | 'completed'>('all')
   const [open, setOpen] = useState<string | null>(null)
   const toggle = (id: string) => setOpen((p) => (p === id ? null : id))
+
+  // Delete state
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [showClearAllConfirm, setShowClearAllConfirm] = useState(false)
+
+  function handleDeleteCampaign(campaign: MockCampaign) {
+    if (hasRealCampaigns) {
+      // Delete associated contacts from contacts store
+      const real = storeCampaigns.find((c) => c.id === campaign.id)
+      if (real) {
+        for (const cid of real.contactIds) deleteContact(cid)
+      }
+      deleteCampaign(campaign.id)
+    } else {
+      setHiddenMockIds((prev) => new Set([...prev, campaign.id]))
+    }
+    setDeletingId(null)
+    if (open === campaign.id) setOpen(null)
+  }
+
+  function handleClearAll() {
+    if (hasRealCampaigns) {
+      for (const c of storeCampaigns) {
+        for (const cid of c.contactIds) deleteContact(cid)
+      }
+      clearAllCampaigns()
+    } else {
+      setHiddenMockIds(new Set(MOCK_CAMPAIGNS.map((c) => c.id)))
+    }
+    setShowClearAllConfirm(false)
+    setOpen(null)
+    setDeletingId(null)
+  }
 
   // Active live campaign
   const [activeLiveCampaign, setActiveLiveCampaign] = useState<MockCampaign | null>(
@@ -581,7 +621,18 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
     <div className="flex flex-col gap-4">
       {/* Header */}
       <div>
-        <h2 className="text-sm font-semibold">{t('campaigns.title')}</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold">{t('campaigns.title')}</h2>
+          {allCampaigns.length > 0 && (
+            <button
+              className="text-[10px] text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1"
+              onClick={() => setShowClearAllConfirm(true)}
+            >
+              <Trash2 className="w-3 h-3" />
+              Borrar todo
+            </button>
+          )}
+        </div>
         <p className="text-xs text-muted-foreground">
           {t('campaigns.count', { count: allCampaigns.length })}
           {realCampaigns.length > 0 && (
@@ -592,6 +643,32 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
           )}
         </p>
       </div>
+
+      {/* ── Clear all confirmation banner */}
+      {showClearAllConfirm && (
+        <div className="flex items-center gap-2 rounded-xl bg-destructive/10 border border-destructive/30 px-3 py-2.5">
+          <AlertTriangle className="w-4 h-4 text-destructive shrink-0" />
+          <p className="flex-1 text-xs text-destructive leading-snug">
+            ¿Borrar todas las campañas y sus contactos?
+          </p>
+          <Button
+            size="sm"
+            variant="destructive"
+            className="h-6 px-2 text-[10px] shrink-0"
+            onClick={handleClearAll}
+          >
+            Borrar
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[10px] shrink-0"
+            onClick={() => setShowClearAllConfirm(false)}
+          >
+            Cancelar
+          </Button>
+        </div>
+      )}
 
       {/* Tabs — full width, 3 tabs */}
       <div className="flex items-center gap-1 p-0.5 rounded-lg bg-muted w-full">
@@ -727,58 +804,101 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
                       <Separator />
 
                       {/* Action buttons */}
-                      <div className="flex gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="flex-1 h-7 text-xs gap-1"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setViewCampaign(campaign)
-                          }}
-                        >
-                          <Eye className="w-3 h-3" />
-                          Ver
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="flex-1 h-7 text-xs gap-1"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            openEdit(campaign)
-                          }}
-                        >
-                          <Edit3 className="w-3 h-3" />
-                          Editar
-                        </Button>
-                        <Button
-                          size="sm"
-                          className="flex-1 h-7 text-xs gap-1"
-                          disabled={campaign.status === 'completed'}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handleSend(campaign)
-                          }}
-                        >
-                          <Send className="w-3 h-3" />
-                          Enviar
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-2 text-xs border-primary/40 text-primary hover:bg-primary/10"
-                          title="Generar mensajes con IA"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setAiCampaign(campaign)
-                            setAiPrompt('')
-                            setAiDone(false)
-                          }}
-                        >
-                          <Bot className="w-3.5 h-3.5" />
-                        </Button>
-                      </div>
+                      {deletingId === campaign.id ? (
+                        <div className="flex items-center gap-2 rounded-lg bg-destructive/10 border border-destructive/30 px-3 py-2">
+                          <AlertTriangle className="w-3 h-3 text-destructive shrink-0" />
+                          <p className="flex-1 text-xs text-destructive">
+                            ¿Borrar campaña y sus {campaign.contactCount} contactos?
+                          </p>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            className="h-6 px-2 text-[10px] shrink-0"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleDeleteCampaign(campaign)
+                            }}
+                          >
+                            Borrar
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-2 text-[10px] shrink-0"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setDeletingId(null)
+                            }}
+                          >
+                            Cancelar
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1 h-7 text-xs gap-1"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setViewCampaign(campaign)
+                            }}
+                          >
+                            <Eye className="w-3 h-3" />
+                            Ver
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1 h-7 text-xs gap-1"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              openEdit(campaign)
+                            }}
+                          >
+                            <Edit3 className="w-3 h-3" />
+                            Editar
+                          </Button>
+                          <Button
+                            size="sm"
+                            className="flex-1 h-7 text-xs gap-1"
+                            disabled={campaign.status === 'completed'}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleSend(campaign)
+                            }}
+                          >
+                            <Send className="w-3 h-3" />
+                            Enviar
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 text-xs border-primary/40 text-primary hover:bg-primary/10"
+                            title="Generar mensajes con IA"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setAiCampaign(campaign)
+                              setAiPrompt('')
+                              setAiDone(false)
+                            }}
+                          >
+                            <Bot className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                            title="Borrar campaña"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setDeletingId(campaign.id)
+                            }}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -823,7 +943,7 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
               <Textarea
                 value={editMessage}
                 onChange={(e) => setEditMessage(e.target.value)}
-                className="text-xs min-h-[80px] resize-none"
+                className="text-xs min-h-20 resize-none"
               />
             </div>
           </div>
@@ -855,7 +975,7 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
               Lista de contactos de la campaña
             </p>
           </DialogHeader>
-          <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1">
+          <div className="space-y-2 max-h-85 overflow-y-auto pr-1">
             {viewCampaign?.contacts.map((c) => (
               <div key={c.name} className="rounded-lg border border-border bg-card">
                 <div className="flex items-center gap-2 px-3 py-2">
@@ -889,7 +1009,7 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
                       placeholder="Mensaje personalizado…"
                       value={contactMessage}
                       onChange={(e) => setContactMessage(e.target.value)}
-                      className="text-xs min-h-[60px] resize-none"
+                      className="text-xs min-h-15 resize-none"
                     />
                     <Button
                       size="sm"
@@ -957,7 +1077,7 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
                   placeholder="ej: Escribe un mensaje de presentación profesional, menciona nuestra especialización en IA y análisis de datos, y propón una colaboración editorial. Tono: cercano pero profesional."
                   value={aiPrompt}
                   onChange={(e) => setAiPrompt(e.target.value)}
-                  className="text-xs min-h-[100px] resize-none"
+                  className="text-xs min-h-25 resize-none"
                   disabled={aiGenerating}
                 />
               </div>
