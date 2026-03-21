@@ -128,7 +128,7 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
   const [affinitySubcategory, setAffinitySubcategory] = useState('')
   const [language, setLanguage] = useState('any')
   const [country, setCountry] = useState('worldwide')
-  const [consistency, setConsistency] = useState([5])
+  const [consistency] = useState([5])
   const [description, setDescription] = useState('')
   const [targetScrapeCount, setTargetScrapeCount] = useState([50])
   const [scrapingMode, setScrapingMode] = useState<'fast' | 'precise'>('fast')
@@ -253,13 +253,6 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
       await handleStartScraping(invId)
     }
   }
-
-  const consistencyLabel =
-    consistency[0] <= 3
-      ? t('investigation.consistencyBroad')
-      : consistency[0] <= 7
-        ? t('investigation.consistencyBalanced')
-        : t('investigation.consistencyStrict')
 
   // ── Energy computations ──
   const displayPercent = energyPercent + bonusPercent
@@ -798,33 +791,7 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
               </div>
             </div>
 
-            {/* Consistency slider */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-1">
-                <div className="flex items-center gap-1.5">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-                    {t('investigation.consistency')}
-                  </p>
-                  <InfoTip text={t('investigation.consistencyTooltip')} />
-                </div>
-                <Badge variant="outline" className="font-mono text-[10px] h-5 px-1.5 shrink-0">
-                  {consistency[0]}/10 · {consistencyLabel}
-                </Badge>
-              </div>
-              <Slider
-                className="h-1"
-                value={consistency}
-                onValueChange={setConsistency}
-                min={1}
-                max={10}
-                step={1}
-              />
-              <div className="flex justify-between text-[10px] text-muted-foreground">
-                <span>{t('investigation.consistencyBroad')}</span>
-                <span>{t('investigation.consistencyBalanced')}</span>
-                <span>{t('investigation.consistencyStrict')}</span>
-              </div>
-            </div>
+            {/* Consistency slider removed — hardcoded to 5 (balanced) */}
           </CardContent>
         </Card>
 

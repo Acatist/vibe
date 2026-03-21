@@ -4,10 +4,14 @@ import type { Contact, ContactCategory } from '@core/types/contact.types'
 
 interface ContactsStore {
   contacts: Contact[]
+  hasEverAddedContact: boolean
+  hiddenMockContactIds: string[]
   addContacts: (contacts: Contact[]) => void
   addContact: (contact: Contact) => void
   updateContact: (id: string, updates: Partial<Contact>) => void
   deleteContact: (id: string) => void
+  deleteContactsBatch: (ids: string[]) => void
+  hideMockContact: (id: string) => void
   getByInvestigation: (investigationId: string) => Contact[]
   getByCategory: (category: ContactCategory) => Contact[]
 }
@@ -16,6 +20,8 @@ export const useContactsStore = create<ContactsStore>()(
   persist(
     (set, get) => ({
       contacts: [],
+      hasEverAddedContact: false,
+      hiddenMockContactIds: [],
 
       addContacts: (newContacts) =>
         set((s) => {
@@ -25,7 +31,7 @@ export const useContactsStore = create<ContactsStore>()(
           const fresh = newContacts.filter(
             (nc) => !existingIds.has(nc.id) && !existingEmails.has(nc.email.toLowerCase().trim()),
           )
-          return { contacts: [...s.contacts, ...fresh] }
+          return { contacts: [...s.contacts, ...fresh], hasEverAddedContact: true }
         }),
 
       addContact: (contact) =>
@@ -38,7 +44,7 @@ export const useContactsStore = create<ContactsStore>()(
           ) {
             return s
           }
-          return { contacts: [...s.contacts, contact] }
+          return { contacts: [...s.contacts, contact], hasEverAddedContact: true }
         }),
 
       updateContact: (id, updates) =>
@@ -50,6 +56,16 @@ export const useContactsStore = create<ContactsStore>()(
         set((s) => ({
           contacts: s.contacts.filter((c) => c.id !== id),
         })),
+
+      deleteContactsBatch: (ids) => {
+        const idSet = new Set(ids)
+        set((s) => ({
+          contacts: s.contacts.filter((c) => !idSet.has(c.id)),
+        }))
+      },
+
+      hideMockContact: (id) =>
+        set((s) => ({ hiddenMockContactIds: [...s.hiddenMockContactIds, id] })),
 
       getByInvestigation: (investigationId) =>
         get().contacts.filter((c) => c.investigationId === investigationId),

@@ -4,6 +4,8 @@ import type { Campaign, CampaignStatus, OutreachMessage } from '@core/types/camp
 
 interface CampaignStore {
   campaigns: Campaign[]
+  hasEverCreatedCampaign: boolean
+  hiddenMockCampaignIds: string[]
 
   createCampaign: (
     campaign: Omit<Campaign, 'id' | 'createdAt' | 'startedAt' | 'completedAt'>,
@@ -21,12 +23,16 @@ interface CampaignStore {
   getCampaign: (id: string) => Campaign | undefined
   deleteCampaign: (id: string) => void
   clearAllCampaigns: () => void
+  hideMockCampaign: (id: string) => void
+  hideAllMockCampaigns: (ids: string[]) => void
 }
 
 export const useCampaignStore = create<CampaignStore>()(
   persist(
     (set, get) => ({
       campaigns: [],
+      hasEverCreatedCampaign: false,
+      hiddenMockCampaignIds: [],
 
       createCampaign: (data) => {
         const id = crypto.randomUUID()
@@ -37,7 +43,7 @@ export const useCampaignStore = create<CampaignStore>()(
           startedAt: null,
           completedAt: null,
         }
-        set((s) => ({ campaigns: [campaign, ...s.campaigns] }))
+        set((s) => ({ campaigns: [campaign, ...s.campaigns], hasEverCreatedCampaign: true }))
         return id
       },
 
@@ -91,6 +97,11 @@ export const useCampaignStore = create<CampaignStore>()(
       deleteCampaign: (id) => set((s) => ({ campaigns: s.campaigns.filter((c) => c.id !== id) })),
 
       clearAllCampaigns: () => set({ campaigns: [] }),
+
+      hideMockCampaign: (id) =>
+        set((s) => ({ hiddenMockCampaignIds: [...s.hiddenMockCampaignIds, id] })),
+
+      hideAllMockCampaigns: (ids) => set({ hiddenMockCampaignIds: ids }),
     }),
     {
       name: 'vibe-reach:campaigns',

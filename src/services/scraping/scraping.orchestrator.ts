@@ -579,7 +579,7 @@ class ScrapingOrchestrator {
 
     // Listen for tab closure — cancel session if user closes the tab
     const onTabRemoved = (tabId: number) => {
-      if (this.session?.tabId === tabId && this.session.status === 'running') {
+      if (this.session?.tabId === tabId && (this.session.status === 'running' || this.session.status === 'paused')) {
         log.info('Scraping tab closed by user — cancelling session')
         this.session.status = 'cancelled'
         this._broadcastProgress()
@@ -602,23 +602,26 @@ class ScrapingOrchestrator {
       this.session.status = 'paused'
       log.info('Scraping paused')
       this._broadcastProgress()
+      // The _run() polling loop (500 ms ticks) keeps the service worker alive
+      // while paused — no extra keepalive needed.
     }
   }
 
   resume(): void {
     if (this.session?.status === 'paused') {
       this.session.status = 'running'
-      // Treat the pause itself as a break — reset timer so we don't trigger
-      // a micro-break immediately on resume.
+      // Treat the pause duration as a break so we don't trigger a micro-break
+      // immediately on the first resumed iteration.
       this._lastBreakAt = Date.now()
       log.info('Scraping resumed')
-      this._run().catch((e) => {
-        log.error('Resume loop crashed', e)
-        if (this.session) {
-          this.session.status = 'error'
-          this._broadcastError(this.session.invId, (e as Error).message)
-        }
-      })
+      this._broadcastProgress() // immediately tell the UI we're running again
+      // No need to call _run() again — the 500 ms polling loop inside _run()
+      // is still alive and will pick up the status change on its next tick.
+    } else {
+      // The service worker was restarted while the UI thought scraping was
+      // paused.  Broadcast a reset so the sidepanel returns to idle.
+      log.warn('Resume: no paused session found — resetting UI state')
+      this._broadcastOrphanReset()
     }
   }
 
@@ -628,6 +631,10 @@ class ScrapingOrchestrator {
       log.info('Scraping cancelled')
       this._broadcastProgress()
       this._closeTab()
+    } else if (!this.session) {
+      // SW was restarted while the UI had an active scraping session.
+      log.warn('Cancel: no active session — resetting UI state')
+      this._broadcastOrphanReset()
     }
   }
 
@@ -684,18 +691,28 @@ class ScrapingOrchestrator {
       const maxPagesScanned = Math.min(s.targetCount * 5, 500)
 
       while (
-        s.status === 'running' &&
+        (s.status === 'running' || s.status === 'paused') &&
         s.contactsFound < s.targetCount &&
         s.pagesScanned < maxPagesScanned &&
         consecutiveErrors < MAX_CONSECUTIVE_ERRORS
       ) {
         if (this._runId !== myRunId) return
 
+        // If paused, keep the SW alive by polling every 500 ms.
+        // The loop resumes naturally when resume() sets status → 'running'.
+        if (s.status === 'paused') {
+          await new Promise<void>((resolve) => setTimeout(resolve, 500))
+          continue
+        }
+
         try {
           // Refill URL queue from search engines (round-robin)
           if (s.urlQueue.length === 0) {
             const filled = await this._fetchNextSearchPage()
             if (this._runId !== myRunId) return
+            // If status changed mid-search (pause/cancel), go back to top so
+            // the pause handler or while condition exit correctly.
+            if (s.status !== 'running') continue
             if (!filled) {
               // Try next query variant with all engines reset
               if (s.currentVariantIdx + 1 < s.queryVariants.length) {
@@ -735,7 +752,9 @@ class ScrapingOrchestrator {
           // Navigate to the page
           await this._navigateTo(url)
           if (this._runId !== myRunId) return
-          if (s.status !== 'running') break
+          // If paused mid-navigation: continue → while condition keeps us alive.
+          // If cancelled: continue → while condition exits the loop.
+          if (s.status !== 'running') continue
 
           s.pagesScanned++
           this._lastProgressAt = Date.now()
@@ -1274,6 +1293,32 @@ class ScrapingOrchestrator {
   }
 
   // ── Messaging ──────────────────────────────────────────────────────────────
+
+  /**
+   * Broadcast a terminal (non-running/non-paused) status to force the sidepanel
+   * to reset to idle.  Called when resume() or cancel() is received but the
+   * in-memory session is gone (e.g. the service worker was restarted while
+   * scraping was paused).
+   */
+  private _broadcastOrphanReset(): void {
+    chrome.runtime
+      .sendMessage({
+        type: MessageType.SCRAPING_PROGRESS,
+        payload: {
+          invId: '',
+          phase: 'contacts',
+          currentUrl: '',
+          urlsFound: 0,
+          contactsFound: 0,
+          discardedCount: 0,
+          targetCount: 0,
+          pagesScanned: 0,
+          energyLeft: energyService.getState().current,
+          status: 'cancelled',
+        },
+      })
+      .catch(() => {})
+  }
 
   private _broadcastProgress(currentUrl = '', phaseOverride?: string): void {
     const s = this.session

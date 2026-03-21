@@ -21,6 +21,8 @@ import {
   Play,
   Square,
   Trash2,
+  Bot,
+  Loader2,
 } from 'lucide-react'
 import { Button } from '@components/ui/button'
 import { Input } from '@components/ui/input'
@@ -28,6 +30,7 @@ import { Textarea } from '@components/ui/textarea'
 import { Progress } from '@components/ui/progress'
 import { Label } from '@components/ui/label'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@components/ui/tooltip'
+import { TruncatedText } from '@components/ui/truncated-text'
 import { useCampaignStore } from '@store/campaign.store'
 import { useContactsStore } from '@store/contacts.store'
 import { useInvestigationStore } from '@store/investigation.store'
@@ -35,6 +38,8 @@ import { messageService } from '@services/message.service'
 import { MessageType } from '@core/types/message.types'
 import type { Contact, ContactCategory } from '@core/types/contact.types'
 import type { TabId } from '@components/layout/Navigation'
+import { getAIProvider } from '@services/ai.service'
+import { useBusinessStore } from '@store/business.store'
 
 // ─── Category display mapping for real ContactCategory values ────────────────────────────────────
 
@@ -192,14 +197,62 @@ function ScoreBar({ score }: { score: number }) {
   )
 }
 
-function MessageComposer({ email }: { email: string }) {
+function MessageComposer({ contact, context }: { contact: MockContact; context: string }) {
+  const { companyName, phone, email: senderEmail } = useBusinessStore()
   const [subject, setSubject] = useState('')
   const [body, setBody] = useState('')
   const [sent, setSent] = useState(false)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState<string | null>(null)
+
+  async function handleGenerateWithAI() {
+    setAiLoading(true)
+    setAiError(null)
+    try {
+      const provider = getAIProvider()
+      const fullContact: Contact = {
+        id: contact.id,
+        name: contact.company,
+        role: contact.role || 'Professional',
+        organization: contact.company,
+        email: contact.email,
+        website: contact.website,
+        contactPage: contact.contactPage,
+        specialization: contact.specialization,
+        topics: contact.topics,
+        region: contact.region,
+        recentArticles: [],
+        category: 'researcher',
+        relevanceScore: contact.score,
+        investigationId: '',
+      }
+      // Append sender identity so the AI can build a proper email signature
+      const senderLines = [
+        companyName ? `Company: ${companyName}` : '',
+        senderEmail ? `Email: ${senderEmail}` : '',
+        phone ? `Phone: ${phone}` : '',
+      ].filter(Boolean)
+      const enrichedContext = [
+        context || 'Professional outreach and collaboration opportunity.',
+        senderLines.length ? `\nSENDER INFO (for email signature):\n${senderLines.join('\n')}` : '',
+      ]
+        .join('')
+        .trim()
+      const result = await provider.generateMessages(fullContact, enrichedContext)
+      if (result.success && result.data) {
+        setSubject(result.data.emailSubject)
+        setBody(result.data.emailBody)
+      } else {
+        setAiError('No se pudo generar el mensaje. Verifica la configuración de IA.')
+      }
+    } catch {
+      setAiError('Error al conectar con la IA.')
+    }
+    setAiLoading(false)
+  }
 
   function handleSend() {
     if (!subject.trim() || !body.trim()) return
-    // Placeholder — real send logic goes here
     setSent(true)
     setTimeout(() => setSent(false), 3000)
     setSubject('')
@@ -208,10 +261,32 @@ function MessageComposer({ email }: { email: string }) {
 
   return (
     <div className="mt-3 pt-3 border-t border-border space-y-2">
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1">
-        <MessageSquarePlus className="w-3 h-3" />
-        Nuevo mensaje · <span className="text-primary normal-case font-normal">{email}</span>
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1 min-w-0 overflow-hidden flex-1">
+          <MessageSquarePlus className="w-3 h-3 shrink-0" />
+          <span className="shrink-0">Nuevo mensaje ·</span>
+          <span className="text-primary normal-case font-normal truncate min-w-0">{contact.email}</span>
+        </p>
+        <TooltipProvider delayDuration={300}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 w-6 p-0 shrink-0 border-primary/40 text-primary hover:bg-primary/10"
+                onClick={handleGenerateWithAI}
+                disabled={aiLoading}
+              >
+                {aiLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bot className="w-3 h-3" />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs">
+              {aiLoading ? 'Generando…' : 'Generar con IA'}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
+      {aiError && <p className="text-[10px] text-destructive">{aiError}</p>}
       <Input
         placeholder="Asunto del mensaje…"
         value={subject}
@@ -219,7 +294,7 @@ function MessageComposer({ email }: { email: string }) {
         className="h-7 text-xs"
       />
       <Textarea
-        placeholder="Escribe tu mensaje aquí…"
+        placeholder="Escribe tu mensaje aquí… o pulsa 'Generar con IA'"
         value={body}
         onChange={(e) => setBody(e.target.value)}
         className="text-xs min-h-18 resize-none"
@@ -248,7 +323,15 @@ function MessageComposer({ email }: { email: string }) {
   )
 }
 
-function ContactCard({ contact, onDelete }: { contact: MockContact; onDelete?: () => void }) {
+function ContactCard({
+  contact,
+  onDelete,
+  context,
+}: {
+  contact: MockContact
+  onDelete?: () => void
+  context: string
+}) {
   const [open, setOpen] = useState(false)
   const [msgOpen, setMsgOpen] = useState(false)
 
@@ -271,16 +354,25 @@ function ContactCard({ contact, onDelete }: { contact: MockContact; onDelete?: (
             )}
             <p className="text-xs font-medium truncate">{contact.company}</p>
           </div>
-          <a
-            href={`https://${contact.website}`}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="text-[11px] text-emerald-500 hover:text-emerald-400 flex items-center gap-1 transition-colors mt-0.5"
-          >
-            <ExternalLink className="w-2.5 h-2.5 shrink-0" />
-            {contact.website}
-          </a>
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <a
+                  href={`https://${contact.website}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-[11px] text-emerald-500 hover:text-emerald-400 flex items-center gap-1 transition-colors mt-0.5 overflow-hidden"
+                >
+                  <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                  <span className="truncate">{contact.website}</span>
+                </a>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                {contact.website}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
         <div className="px-3 py-2.5 flex items-center">
           <CategoryBadge category={contact.category} />
@@ -299,35 +391,44 @@ function ContactCard({ contact, onDelete }: { contact: MockContact; onDelete?: (
         <div className="px-4 pb-4 bg-primary/5 border-t border-primary/10">
           <div className="pt-3 space-y-3">
             <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="flex flex-col gap-0.5">
+              <div className="flex flex-col gap-0.5 min-w-0">
                 <span className="text-muted-foreground uppercase tracking-wide text-[10px]">
                   Rol
                 </span>
-                <span className="font-medium">{contact.role || 'Indefinido'}</span>
+                <TruncatedText text={contact.role || 'Indefinido'} className="font-medium text-xs" />
               </div>
-              <div className="flex flex-col gap-0.5">
+              <div className="flex flex-col gap-0.5 min-w-0">
                 <span className="text-muted-foreground uppercase tracking-wide text-[10px]">
                   Región
                 </span>
-                <span className="font-medium">{contact.region}</span>
+                <TruncatedText text={contact.region} className="font-medium text-xs" />
               </div>
-              <div className="col-span-2 flex flex-col gap-0.5">
+              <div className="col-span-2 flex flex-col gap-0.5 min-w-0">
                 <span className="text-muted-foreground uppercase tracking-wide text-[10px]">
                   Especialización
                 </span>
-                <span className="font-medium">{contact.specialization}</span>
+                <TruncatedText text={contact.specialization} className="font-medium text-xs" />
               </div>
-              <div className="col-span-2 flex flex-col gap-0.5">
+              <div className="col-span-2 flex flex-col gap-0.5 min-w-0">
                 <span className="text-muted-foreground uppercase tracking-wide text-[10px]">
                   Email
                 </span>
-                <a
-                  href={`mailto:${contact.email}`}
-                  className="font-medium text-primary hover:underline flex items-center gap-1"
-                >
-                  <Mail className="w-3 h-3" />
-                  {contact.email}
-                </a>
+                <TooltipProvider delayDuration={300}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <a
+                        href={`mailto:${contact.email}`}
+                        className="font-medium text-primary hover:underline flex items-center gap-1 overflow-hidden text-xs"
+                      >
+                        <Mail className="w-3 h-3 shrink-0" />
+                        <span className="truncate">{contact.email}</span>
+                      </a>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs">
+                      {contact.email}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
               </div>
             </div>
 
@@ -381,7 +482,7 @@ function ContactCard({ contact, onDelete }: { contact: MockContact; onDelete?: (
               )}
             </div>
 
-            {msgOpen && <MessageComposer email={contact.email} />}
+              {msgOpen && <MessageComposer contact={contact} context={context} />}
           </div>
         </div>
       )}
@@ -397,7 +498,7 @@ interface ContactsViewProps {
 
 export function ContactsView({ onNavigate }: ContactsViewProps) {
   const { createCampaign, campaigns } = useCampaignStore()
-  const { contacts: allStoreContacts, addContacts, deleteContact } = useContactsStore()
+  const { contacts: allStoreContacts, addContacts, deleteContact, hasEverAddedContact, hiddenMockContactIds, hideMockContact } = useContactsStore()
   const {
     currentId,
     getCurrent,
@@ -419,10 +520,13 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
     ? allStoreContacts.filter((c) => c.investigationId === currentId)
     : []
 
-  // Build the display list: real contacts from the store, or mock data as fallback
+  // Build the display list: real contacts from the store, or mock data as fallback.
+  // Once hasEverAddedContact is true (persisted), never fall back to mock data — show
+  // the real empty state instead so deleted items don't reappear.
   const hasRealContacts = investigationContacts.length > 0
+  const investigationContext = getCurrent()?.prompt ?? ''
 
-  const [hiddenMockIds, setHiddenMockIds] = useState<Set<string>>(new Set())
+  // hiddenMockContactIds is persisted in the contacts store — survives tab navigation and extension reloads
 
   const allDisplayContacts: MockContact[] = hasRealContacts
     ? investigationContacts.map((c) => ({
@@ -442,9 +546,9 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
         contactPage: c.contactPage,
         discarded: c.discarded,
       }))
-    : MOCK_CONTACTS.filter((c) => !hiddenMockIds.has(c.id))
-
-  // Split into relevant (accepted) and others (discarded)
+    : hasEverAddedContact
+      ? []
+        : MOCK_CONTACTS.filter((c) => !hiddenMockContactIds.includes(c.id))
   const relevantContacts = allDisplayContacts.filter((c) => !c.discarded)
   const otherContacts = allDisplayContacts.filter((c) => c.discarded)
 
@@ -457,14 +561,16 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
   // during scraping via SCRAPING_CONTACT messages adding to the store one by one.
 
   function handleDeleteContact(id: string) {
-    if (hasRealContacts) {
+    const existsInStore = allStoreContacts.some((c) => c.id === id)
+    if (existsInStore) {
       deleteContact(id)
     } else {
-      setHiddenMockIds((prev) => new Set([...prev, id]))
+      hideMockContact(id)
     }
   }
 
-  // ── Modal state
+  // ── Campaign modal state
+  const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(new Set())
   const [modalOpen, setModalOpen] = useState(false)
   const [campName, setCampName] = useState('')
   const [campSubject, setCampSubject] = useState('')
@@ -476,15 +582,24 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
     setCampSubject('')
     setCampBody('')
     setCampSaved(false)
+    setSelectedContactIds(new Set())
+  }
+
+  function openModal() {
+    // Pre-select relevant contacts; if none, pre-select all available contacts
+    const preselect = relevantContacts.length > 0 ? relevantContacts : allDisplayContacts
+    setSelectedContactIds(new Set(preselect.map((c) => c.id)))
+    setModalOpen(true)
   }
 
   function handleCreateCampaign() {
-    if (!campName.trim()) return
+    if (!campName.trim() || selectedContactIds.size === 0) return
     const inv = getCurrent()
+    const selectedContacts = allDisplayContacts.filter((c) => selectedContactIds.has(c.id))
 
     // Persist contacts to the store only if they're mock (real ones are already persisted)
     if (!hasRealContacts) {
-      const contactsToSave: Contact[] = relevantContacts.map((c) => ({
+      const contactsToSave: Contact[] = selectedContacts.map((c) => ({
         id: c.id,
         name: c.company,
         role: c.role,
@@ -508,7 +623,7 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
       investigationId: currentId ?? '',
       prompt: inv?.prompt ?? campBody.trim(),
       status: 'draft',
-      contactIds: relevantContacts.map((c) => c.id),
+      contactIds: [...selectedContactIds],
       messages: [],
     })
 
@@ -695,6 +810,7 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
             key={contact.id}
             contact={contact}
             onDelete={() => handleDeleteContact(contact.id)}
+            context={investigationContext}
           />
         ))}
       </div>
@@ -725,7 +841,7 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
           </div>
         ) : (
           <div className="py-3">
-            <Button className="w-full gap-2" onClick={() => setModalOpen(true)}>
+            <Button className="w-full gap-2" onClick={openModal}>
               <Plus className="w-4 h-4" />
               Crear Campaña
             </Button>
@@ -765,7 +881,7 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
                   <div className="flex-1 min-w-0">
                     <h3 className="text-sm font-semibold">Nueva Campaña</h3>
                     <p className="text-[11px] text-muted-foreground">
-                      {relevantContacts.length} contactos seleccionados
+                        {selectedContactIds.size} contactos seleccionados
                     </p>
                   </div>
                   <button
@@ -781,13 +897,94 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
 
                 {/* ── Form */}
                 <div className="px-5 py-4 space-y-3">
-                  <div className="flex items-center gap-2 rounded-xl bg-muted/50 border border-border px-3 py-2.5">
-                    <User2 className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                    <p className="text-xs text-muted-foreground">
-                      <span className="font-medium text-foreground">
-                        {relevantContacts.length} contactos
-                      </span>{' '}
-                      incluidos automáticamente
+{/* ── Contact selection checklist */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1">
+                          <User2 className="w-3 h-3" />
+                          Contactos a incluir
+                        </Label>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            className="text-[10px] text-primary hover:underline"
+                            onClick={() =>
+                              setSelectedContactIds(new Set(allDisplayContacts.map((c) => c.id)))
+                            }
+                          >
+                            Todos
+                          </button>
+                          <button
+                            type="button"
+                            className="text-[10px] text-muted-foreground hover:underline"
+                            onClick={() => setSelectedContactIds(new Set())}
+                          >
+                            Ninguno
+                          </button>
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-border overflow-hidden max-h-44 overflow-y-auto">
+                        {allDisplayContacts.length === 0 ? (
+                          <p className="text-xs text-muted-foreground text-center py-4">
+                            No hay contactos disponibles
+                          </p>
+                        ) : (
+                          [...relevantContacts, ...otherContacts].map((c) => {
+                            const isSelected = selectedContactIds.has(c.id)
+                            return (
+                              <div
+                                key={c.id}
+                                className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer transition-colors border-b border-border last:border-b-0 select-none ${
+                                  isSelected ? 'bg-primary/5' : 'hover:bg-muted/40'
+                                }`}
+                                onClick={() =>
+                                  setSelectedContactIds((prev) => {
+                                    const next = new Set(prev)
+                                    if (next.has(c.id)) next.delete(c.id)
+                                    else next.add(c.id)
+                                    return next
+                                  })
+                                }
+                              >
+                                <div
+                                  className={`w-3.5 h-3.5 rounded-sm border shrink-0 flex items-center justify-center ${
+                                    isSelected
+                                      ? 'bg-primary border-primary'
+                                      : 'border-muted-foreground/40'
+                                  }`}
+                                >
+                                  {isSelected && (
+                                    <svg
+                                      className="w-2.5 h-2.5 text-white"
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="3"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                    >
+                                      <polyline points="20 6 9 17 4 12" />
+                                    </svg>
+                                  )}
+                                </div>
+                                <span className="flex-1 text-xs font-medium truncate">{c.company}</span>
+                                {c.discarded && (
+                                  <span className="text-[9px] text-amber-400 border border-amber-400/30 rounded px-1 shrink-0">
+                                    Otro
+                                  </span>
+                                )}
+                                <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
+                                  {c.score}%
+                                </span>
+                              </div>
+                            )
+                          })
+                        )}
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        {selectedContactIds.size} contacto
+                        {selectedContactIds.size !== 1 ? 's' : ''} seleccionado
+                        {selectedContactIds.size !== 1 ? 's' : ''}
                     </p>
                   </div>
 
@@ -843,7 +1040,7 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
                   </Button>
                   <Button
                     className="flex-1 h-10 text-sm gap-2"
-                    disabled={!campName.trim()}
+                    disabled={!campName.trim() || selectedContactIds.size === 0}
                     onClick={handleCreateCampaign}
                   >
                     <Plus className="w-4 h-4" />

@@ -32,6 +32,7 @@ import { Textarea } from '@components/ui/textarea'
 import { Progress } from '@components/ui/progress'
 import { Label } from '@components/ui/label'
 import { Separator } from '@components/ui/separator'
+import { TruncatedText } from '@components/ui/truncated-text'
 import {
   Dialog,
   DialogContent,
@@ -333,9 +334,9 @@ function LiveSendView({ campaign }: { campaign: MockCampaign }) {
       {/* Campaign header */}
       <div className="rounded-xl border border-border bg-card px-4 py-3 space-y-3">
         <div className="flex items-start justify-between gap-2">
-          <div>
-            <p className="text-xs font-semibold">{campaign.name}</p>
-            <p className="text-[11px] text-muted-foreground mt-0.5">
+          <div className="min-w-0 flex-1">
+            <TruncatedText as="p" text={campaign.name} className="text-xs font-semibold" />
+            <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
               {campaign.channel} · {campaign.createdAt}
             </p>
           </div>
@@ -484,17 +485,20 @@ interface CampaignsViewProps {
 
 export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
   const { t } = useTranslation()
-  const { campaigns: storeCampaigns, deleteCampaign, clearAllCampaigns } = useCampaignStore()
-  const { contacts: allContacts, deleteContact } = useContactsStore()
+  const { campaigns: storeCampaigns, deleteCampaign, clearAllCampaigns, hasEverCreatedCampaign, hiddenMockCampaignIds, hideMockCampaign, hideAllMockCampaigns } = useCampaignStore()
+  const { contacts: allContacts, deleteContactsBatch } = useContactsStore()
 
-  // Use real campaigns if available, otherwise show demo data
+  // Use real campaigns if available, otherwise show demo data only for first-time users
   const realCampaigns = storeCampaigns.map((c) => realCampaignToMock(c, allContacts))
   const hasRealCampaigns = realCampaigns.length > 0
 
-  const [hiddenMockIds, setHiddenMockIds] = useState<Set<string>>(new Set())
+  // Only fall back to mock data if the user has never created a real campaign.
+  // Once they've used the real flow (even if they later delete everything), show the real empty state.
   const allCampaigns = hasRealCampaigns
     ? realCampaigns
-    : MOCK_CAMPAIGNS.filter((c) => !hiddenMockIds.has(c.id))
+    : hasEverCreatedCampaign
+      ? []
+      : MOCK_CAMPAIGNS.filter((c) => !hiddenMockCampaignIds.includes(c.id))
 
   const [tab, setTab] = useState<'all' | 'running' | 'completed'>('all')
   const [open, setOpen] = useState<string | null>(null)
@@ -506,31 +510,40 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
 
   function handleDeleteCampaign(campaign: MockCampaign) {
     if (hasRealCampaigns) {
-      // Delete associated contacts from contacts store
       const real = storeCampaigns.find((c) => c.id === campaign.id)
-      if (real) {
-        for (const cid of real.contactIds) deleteContact(cid)
+      if (real?.contactIds.length) {
+        deleteContactsBatch(real.contactIds)
       }
       deleteCampaign(campaign.id)
     } else {
-      setHiddenMockIds((prev) => new Set([...prev, campaign.id]))
+      hideMockCampaign(campaign.id)
     }
     setDeletingId(null)
     if (open === campaign.id) setOpen(null)
+    if (activeLiveCampaign?.id === campaign.id) {
+      setActiveLiveCampaign(null)
+      if (tab === 'running') setTab('all')
+    }
   }
 
   function handleClearAll() {
-    if (hasRealCampaigns) {
-      for (const c of storeCampaigns) {
-        for (const cid of c.contactIds) deleteContact(cid)
+    if (hasRealCampaigns || hasEverCreatedCampaign) {
+      // Collect all contactIds across all real campaigns and delete in one operation
+      const allContactIds = storeCampaigns.flatMap((c) => c.contactIds)
+      if (allContactIds.length) {
+        deleteContactsBatch(allContactIds)
       }
+      // clearAllCampaigns writes { campaigns: [], hasEverCreatedCampaign: true } to storage.
+      // Do NOT call clearStorage() — that would wipe hasEverCreatedCampaign and make mocks reappear.
       clearAllCampaigns()
     } else {
-      setHiddenMockIds(new Set(MOCK_CAMPAIGNS.map((c) => c.id)))
+      hideAllMockCampaigns(MOCK_CAMPAIGNS.map((c) => c.id))
     }
     setShowClearAllConfirm(false)
     setOpen(null)
     setDeletingId(null)
+    setActiveLiveCampaign(null)
+    if (tab === 'running') setTab('all')
   }
 
   // Active live campaign
@@ -734,8 +747,8 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
                     onClick={() => toggle(campaign.id)}
                   >
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-semibold truncate">{campaign.name}</p>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                      <TruncatedText as="p" text={campaign.name} className="text-xs font-semibold" />
+                      <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
                         {campaign.createdAt} · {campaign.channel}
                       </p>
                     </div>
@@ -970,7 +983,7 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
       >
         <DialogContent className="max-w-sm" aria-describedby="view-contacts-desc">
           <DialogHeader>
-            <DialogTitle className="text-sm">{viewCampaign?.name} — Contactos</DialogTitle>
+            <DialogTitle className="text-sm truncate">{viewCampaign?.name} — Contactos</DialogTitle>
             <p id="view-contacts-desc" className="sr-only">
               Lista de contactos de la campaña
             </p>

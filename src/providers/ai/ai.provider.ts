@@ -148,18 +148,57 @@ Respond ONLY with valid JSON:
 }
 
 function buildMessagePrompt(contact: Contact, context: string): string {
-  return `Generate professional outreach messages for this contact based on the investigation context.
+  // context may optionally carry a SENDER: block appended by the UI
+  return `You are an expert business writer. Write a first-contact outreach email that feels personal, elegant, and completely human — not a template.
 
-Contact: ${contact.name}, ${contact.role} at ${contact.organization}
-Specialization: ${contact.specialization}
-Context: ${context}
+RECIPIENT:
+- Organization: ${contact.organization || contact.name}
+- Role: ${contact.role || 'Professional'}
+- Specialization: ${contact.specialization}
+- Topics: ${contact.topics.join(', ')}
+- Region: ${contact.region}
+- Affinity score: ${contact.relevanceScore}/100
 
-Respond ONLY with valid JSON:
+CAMPAIGN PURPOSE / SENDER INFO:
+${context}
+
+EMAIL STRUCTURE — produce each section in the JSON fields below:
+  emailSubject  → max 8 words, specific to the recipient's work, never generic
+  emailBody     → a complete, ready-to-send plain-text email with this exact layout:
+
+      Estimado/a [appropriate salutation based on role],
+
+      [Intro paragraph — 2-3 sentences: name one concrete thing about their specialization
+       that actually resonates; show you read about them, not just their job title.]
+
+      [Middle paragraph — 2-3 sentences: who the sender is, what they do/offer, and
+       why it connects to the recipient's world. Confident, not salesy. No buzzwords.]
+
+      [Closing paragraph — 1-2 sentences: one soft CTA — a brief call, a reply,
+       or an exchange; easy to say yes to.]
+
+      Atentamente,
+
+      [Sender name or company name from SENDER INFO]
+      [Sender email from SENDER INFO — omit if empty]
+      [Sender phone from SENDER INFO — omit if empty]
+
+  contactFormMessage → 2-sentence condensed version for web contact forms (no greeting/signature)
+  followUpMessage    → 2-3 sentence gentle nudge for one week later, assuming no reply
+
+TONE RULES:
+- Language: Spanish by default; English if recipient region is clearly non-Spanish-speaking
+- NEVER use: "espero que estés bien", "no dudes en contactarme", "sinergia", "leveraging"
+- Affinity ≥ 80: slightly warmer, reference a specific aspect of their focus area
+- Total body word count (excluding signature): 100-150 words
+- Reads like a real thoughtful person wrote it, not a CRM blast
+
+Respond ONLY with valid JSON (no markdown wrapper):
 {
-  "emailSubject": "subject line",
-  "emailBody": "full email body",
-  "contactFormMessage": "shorter contact form message",
-  "followUpMessage": "follow-up message"
+  "emailSubject": "...",
+  "emailBody": "...",
+  "contactFormMessage": "...",
+  "followUpMessage": "..."
 }`
 }
 
