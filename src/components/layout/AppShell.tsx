@@ -10,6 +10,7 @@ import { HistoryView } from '@/sidepanel/views/HistoryView'
 import { ReportsView } from '@/sidepanel/views/ReportsView'
 import { SettingsView } from '@/sidepanel/views/SettingsView'
 import { DevTestPanel } from '@/sidepanel/views/DevTestPanel'
+import { useSettingsStore } from '@store/settings.store'
 import { MessageType } from '@core/types/message.types'
 import { messageService } from '@services/message.service'
 import { useInvestigationStore } from '@store/investigation.store'
@@ -68,6 +69,7 @@ export function AppShell() {
     activeBrief: _activeBrief, // subscribed so component re-renders when brief is set
   } = useInvestigationStore()
   const { addContacts } = useContactsStore()
+  const debugMode = useSettingsStore((s) => s.debugMode)
 
   // ── Global scraping message listener ─────────────────────────────────────
   // Lives here so it persists regardless of which view is currently active.
@@ -181,8 +183,8 @@ export function AppShell() {
           </div>
         </main>
       </div>
-      {/* DEV TEST — provisional floating panel, remove when no longer needed */}
-      <DevTestPanel onNavigate={setActiveTab} />
+      {/* DEV TEST — provisional floating panel, only shown in debug mode */}
+      {debugMode && <DevTestPanel onNavigate={setActiveTab} />}
     </div>
   )
 }

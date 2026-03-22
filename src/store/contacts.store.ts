@@ -25,28 +25,24 @@ export const useContactsStore = create<ContactsStore>()(
 
       addContacts: (newContacts) =>
         set((s) => {
-          // Deduplicate by id, email (case-insensitive), AND domain (hostname)
+          // Deduplicate by id and form-centric signature:
+          // contactFormUrl + organization + name (normalized).
+          // Two people from the same org with different forms are NOT duplicates.
           const existingIds = new Set(s.contacts.map((c) => c.id))
-          const existingEmails = new Set(
-            s.contacts.filter((c) => c.email).map((c) => c.email.toLowerCase().trim()),
-          )
-          const existingDomains = new Set(
-            s.contacts
-              .filter((c) => c.website)
-              .map((c) => {
-                try { return new URL(c.website).hostname } catch { return '' }
-              })
-              .filter(Boolean),
+          const existingSignatures = new Set(
+            s.contacts.map((c) => {
+              const form = (c.contactFormUrl ?? '').toLowerCase().replace(/\/+$/, '')
+              const org = c.organization.toLowerCase().trim()
+              const name = c.name.toLowerCase().trim()
+              return `${form}||${org}||${name}`
+            }),
           )
           const fresh = newContacts.filter((nc) => {
             if (existingIds.has(nc.id)) return false
-            if (nc.email && existingEmails.has(nc.email.toLowerCase().trim())) return false
-            if (nc.website) {
-              try {
-                const h = new URL(nc.website).hostname
-                if (existingDomains.has(h)) return false
-              } catch { /* ignore invalid URL */ }
-            }
+            const form = (nc.contactFormUrl ?? '').toLowerCase().replace(/\/+$/, '')
+            const org = nc.organization.toLowerCase().trim()
+            const name = nc.name.toLowerCase().trim()
+            if (existingSignatures.has(`${form}||${org}||${name}`)) return false
             return true
           })
           return { contacts: [...s.contacts, ...fresh], hasEverAddedContact: true }
@@ -54,22 +50,18 @@ export const useContactsStore = create<ContactsStore>()(
 
       addContact: (contact) =>
         set((s) => {
-          // Prevent duplicate by email or domain
-          if (
-            contact.email &&
-            s.contacts.some(
-              (c) => c.email && c.email.toLowerCase().trim() === contact.email.toLowerCase().trim(),
-            )
-          ) {
+          // Prevent duplicate by form-centric signature
+          const newForm = (contact.contactFormUrl ?? '').toLowerCase().replace(/\/+$/, '')
+          const newOrg = contact.organization.toLowerCase().trim()
+          const newName = contact.name.toLowerCase().trim()
+          const newSig = `${newForm}||${newOrg}||${newName}`
+          if (s.contacts.some((c) => {
+            const form = (c.contactFormUrl ?? '').toLowerCase().replace(/\/+$/, '')
+            const org = c.organization.toLowerCase().trim()
+            const name = c.name.toLowerCase().trim()
+            return `${form}||${org}||${name}` === newSig
+          })) {
             return s
-          }
-          if (contact.website) {
-            try {
-              const newHost = new URL(contact.website).hostname
-              if (s.contacts.some((c) => {
-                try { return c.website && new URL(c.website).hostname === newHost } catch { return false }
-              })) return s
-            } catch { /* ignore invalid URL */ }
           }
           return { contacts: [...s.contacts, contact], hasEverAddedContact: true }
         }),

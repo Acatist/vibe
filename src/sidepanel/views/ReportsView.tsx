@@ -7,6 +7,7 @@ import { useCampaignStore } from '@store/campaign.store'
 import { useContactsStore } from '@store/contacts.store'
 import { useSettingsStore } from '@store/settings.store'
 import { useBusinessStore, type BusinessProfile } from '@store/business.store'
+import { useDomainMemoryStore } from '@store/domain.memory.store'
 import { Button } from '@components/ui/button'
 import { Input } from '@components/ui/input'
 import { Label } from '@components/ui/label'
@@ -860,6 +861,66 @@ async function downloadInvestigationPDF(report: Report, biz: BusinessProfile) {
   setTimeout(() => URL.revokeObjectURL(url), 5000)
 }
 
+// ── Domain Memory Summary ──────────────────────────────────────────────────────
+
+function DomainMemorySummary() {
+  const records = useDomainMemoryStore((s) => s.records)
+  const allRecords = Object.values(records)
+  if (allRecords.length === 0) return null
+
+  const totalDomains = allRecords.length
+  const totalOutreach = allRecords.reduce((s, r) => s + r.outreachAttempted, 0)
+  const totalForms = allRecords.reduce((s, r) => s + r.formSubmissions, 0)
+  const totalEmails = allRecords.reduce((s, r) => s + r.emailsOpened, 0)
+
+  // Top domains by outreach attempts
+  const topDomains = [...allRecords]
+    .sort((a, b) => b.outreachAttempted - a.outreachAttempted)
+    .slice(0, 5)
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Rocket className="w-4 h-4 text-violet-400" />
+        <h3 className="text-xs font-semibold">Memoria de dominios</h3>
+      </div>
+
+      <div className="grid grid-cols-4 gap-2">
+        {[
+          { label: 'Dominios', value: totalDomains },
+          { label: 'Outreach', value: totalOutreach },
+          { label: 'Formularios', value: totalForms },
+          { label: 'Emails', value: totalEmails },
+        ].map(({ label, value }) => (
+          <div key={label} className="rounded-lg bg-muted/50 p-2 text-center">
+            <p className="text-sm font-bold tabular-nums">{value}</p>
+            <p className="text-[10px] text-muted-foreground">{label}</p>
+          </div>
+        ))}
+      </div>
+
+      {topDomains.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Top dominios
+          </p>
+          {topDomains.map((r) => (
+            <div
+              key={r.domain}
+              className="flex items-center justify-between text-[11px] px-2 py-1 rounded bg-muted/30"
+            >
+              <span className="truncate flex-1">{r.domain}</span>
+              <span className="text-muted-foreground tabular-nums shrink-0 ml-2">
+                {r.outreachAttempted} int · {r.formSubmissions} form · {r.emailsOpened} email
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Component ──────────────────────────────────────────────────────────────────
 interface ReportsViewProps {
   onNavigate: (tab: TabId) => void
@@ -1215,6 +1276,9 @@ export function ReportsView({ onNavigate: _ }: ReportsViewProps) {
           })}
         </div>
       )}
+
+      {/* ── Domain Memory Summary ── */}
+      <DomainMemorySummary />
     </div>
   )
 }

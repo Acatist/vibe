@@ -43,6 +43,9 @@ export function getAIProvider(): AIProvider {
   }
 
   // Last resort: just use whatever is primary regardless of status
+  if (sorted.length === 0) {
+    throw new Error('No AI provider configured. Add one in Settings → IA.')
+  }
   const primary = sorted[0]
   return getProvider(primary.provider, primary.apiKey, primary.model)
 }

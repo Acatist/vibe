@@ -14,14 +14,14 @@ const log = Logger.create('Outreach:Production')
  */
 export class ProductionOutreachService implements OutreachService {
   async sendEmail(contact: Contact, subject: string, body: string): Promise<OutreachResult> {
-    const consumed = energyService.consume('submitForm')
+    const consumed = energyService.consume('sendEmail')
     if (!consumed.success) {
-      return { success: false, simulated: false, error: 'Insufficient energy' }
+      return { success: false, simulated: false, status: 'failed', error: 'Insufficient energy' }
     }
 
     try {
       if (!contact.email) {
-        return { success: false, simulated: false, error: 'No email address on contact' }
+        return { success: false, simulated: false, status: 'failed', error: 'No email address on contact' }
       }
 
       // Open the default email client with the message pre-filled via mailto:
@@ -32,18 +32,18 @@ export class ProductionOutreachService implements OutreachService {
         `?subject=${encodeURIComponent(subject)}` +
         `&body=${encodeURIComponent(body)}`
       await chrome.tabs.create({ url: mailtoUrl, active: true })
-      return { success: true, simulated: false }
+      return { success: true, simulated: false, status: 'mailto-opened' }
     } catch (e) {
       const msg = (e as Error).message
       log.error(`Email to ${contact.email} failed`, msg)
-      return { success: false, simulated: false, error: msg }
+      return { success: false, simulated: false, status: 'failed', error: msg }
     }
   }
 
   async submitForm(url: string, formData: Record<string, string>): Promise<OutreachResult> {
     const consumed = energyService.consume('submitForm')
     if (!consumed.success) {
-      return { success: false, simulated: false, error: 'Insufficient energy' }
+      return { success: false, simulated: false, status: 'failed', error: 'Insufficient energy' }
     }
 
     try {
@@ -52,7 +52,7 @@ export class ProductionOutreachService implements OutreachService {
       // Open a background tab and navigate to the form page
       const tab = await chrome.tabs.create({ url, active: false })
       if (!tab.id) {
-        return { success: false, simulated: false, error: 'Could not open tab' }
+        return { success: false, simulated: false, status: 'failed', error: 'Could not open tab' }
       }
 
       // Wait for page to load
@@ -70,7 +70,7 @@ export class ProductionOutreachService implements OutreachService {
       const result = fillResult?.[0]?.result as { success: boolean; error?: string; fieldsFilledCount: number } | null
       if (!result?.success) {
         await chrome.tabs.remove(tab.id).catch(() => {})
-        return { success: false, simulated: false, error: result?.error ?? 'Form fill failed' }
+        return { success: false, simulated: false, status: 'failed', error: result?.error ?? 'Form fill failed' }
       }
 
       log.info(`Filled ${result.fieldsFilledCount} form fields, submitting...`)
@@ -94,31 +94,31 @@ export class ProductionOutreachService implements OutreachService {
 
       if (submitted?.success) {
         log.info(`Form submitted successfully at ${url}`)
-        return { success: true, simulated: false }
+        return { success: true, simulated: false, status: 'form-submitted' }
       } else {
-        return { success: false, simulated: false, error: submitted?.error ?? 'Submit button not found' }
+        return { success: false, simulated: false, status: 'failed', error: submitted?.error ?? 'Submit button not found' }
       }
     } catch (e) {
       const msg = (e as Error).message
       log.error(`Form submission at ${url} failed`, msg)
-      return { success: false, simulated: false, error: msg }
+      return { success: false, simulated: false, status: 'failed', error: msg }
     }
   }
 
   async sendLinkedInMessage(contact: Contact, message: string): Promise<OutreachResult> {
-    const consumed = energyService.consume('submitForm')
+    const consumed = energyService.consume('sendLinkedInMessage')
     if (!consumed.success) {
-      return { success: false, simulated: false, error: 'Insufficient energy' }
+      return { success: false, simulated: false, status: 'failed', error: 'Insufficient energy' }
     }
 
     try {
-      // TODO: integrate with LinkedIn automation when available
-      log.info(`Sending LinkedIn message to ${contact.name}`, { messageLen: message.length })
-      return { success: true, simulated: false }
+      // LinkedIn automation is not yet available — mark as queued for manual action
+      log.info(`LinkedIn message queued for ${contact.name} (manual action required)`, { messageLen: message.length })
+      return { success: true, simulated: false, status: 'linkedin-queued' }
     } catch (e) {
       const msg = (e as Error).message
       log.error(`LinkedIn message to ${contact.name} failed`, msg)
-      return { success: false, simulated: false, error: msg }
+      return { success: false, simulated: false, status: 'failed', error: msg }
     }
   }
 

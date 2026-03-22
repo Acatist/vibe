@@ -40,4 +40,6 @@ export interface CampaignExecutionResult {
   energyUsage: EnergyUsage
   durationMs: number
   simulated: boolean
+  /** True when the engine paused for manual review (awaiting-review) */
+  awaitingReview?: boolean
 }

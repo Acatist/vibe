@@ -21,6 +21,10 @@ export const ACTION_COSTS: ActionCostMap = {
   formFill: 8,
   submitForm: 10,
 
+  // Outreach channels
+  sendEmail: 5,
+  sendLinkedInMessage: 3,
+
   // Social media
   like: 1,
   follow: 3,

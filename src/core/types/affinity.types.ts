@@ -26,4 +26,8 @@ export interface AffinityInput {
   targetCategory: string
   /** Target affinity subcategory */
   targetSubcategory: string
+  /** Contact method available (form, email, both, none) — used for scoring boost */
+  contactMethod?: 'form' | 'email' | 'both' | 'none'
+  /** Website domain — used to check DomainMemory for history bonus */
+  contactDomain?: string
 }

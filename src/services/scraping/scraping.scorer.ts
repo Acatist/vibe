@@ -11,6 +11,7 @@
 
 import type { ScrapingStartParams } from './scraping.orchestrator'
 import { getAIProvider } from '@services/ai.service'
+import { useDomainMemoryStore } from '@store/domain.memory.store'
 import { Logger } from '@services/logger.service'
 
 const log = Logger.create('ScrapingScorer')
@@ -244,6 +245,13 @@ export function scoreHeuristic(
     signals.push('method:form')
   }
 
+  // 10. DomainMemory bonus — previously known domain gets a boost
+  const memory = useDomainMemoryStore.getState().getDomain(candidate.domain)
+  if (memory && memory.contactsDiscovered > 0) {
+    score += 15
+    signals.push('memory:knownDomain')
+  }
+
   // Clamp
   score = Math.max(0, Math.min(100, score))
 
@@ -297,8 +305,8 @@ Respond ONLY with JSON: {"score": <0-100>, "reasoning": "<one sentence>"}`
         const parsed = JSON.parse(result.data.match(/\{[\s\S]*\}/)?.[0] ?? result.data)
         if (typeof parsed.score === 'number') {
           const aiScore = Math.max(0, Math.min(100, parsed.score))
-          // Blend: 70% AI + 30% heuristic for stability
-          const blended = Math.round(aiScore * 0.7 + heuristic.score * 0.3)
+          // Blend: 80% AI + 20% heuristic for stability
+          const blended = Math.round(aiScore * 0.8 + heuristic.score * 0.2)
           return {
             score: blended,
             classification: classify(blended),
@@ -311,7 +319,7 @@ Respond ONLY with JSON: {"score": <0-100>, "reasoning": "<one sentence>"}`
         const match = result.data.match(/\b(\d{1,3})\b/)
         if (match) {
           const aiScore = Math.max(0, Math.min(100, parseInt(match[1], 10)))
-          const blended = Math.round(aiScore * 0.7 + heuristic.score * 0.3)
+          const blended = Math.round(aiScore * 0.8 + heuristic.score * 0.2)
           return {
             score: blended,
             classification: classify(blended),

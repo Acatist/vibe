@@ -44,6 +44,7 @@ import { createOutreachService } from '@services/outreach'
 import { isSimulation } from '@services/runtime.service'
 import { useBusinessStore } from '@store/business.store'
 import { useSettingsStore } from '@store/settings.store'
+import { useDomainMemoryStore } from '@store/domain.memory.store'
 import {
   Select,
   SelectContent,
@@ -179,6 +180,23 @@ function CategoryBadge({ category }: { category: string }) {
     >
       <Tag className="w-2.5 h-2.5" />
       {category}
+    </span>
+  )
+}
+
+function DomainMemoryBadge({ website }: { website: string }) {
+  const record = useDomainMemoryStore((s) => {
+    try {
+      const key = new URL(website.startsWith('http') ? website : `https://${website}`).hostname.replace(/^www\./, '')
+      return s.records[key] ?? null
+    } catch {
+      return null
+    }
+  })
+  if (!record || record.outreachAttempted === 0) return null
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border bg-violet-500/15 text-violet-400 border-violet-500/20">
+      ✓ Contactado ({record.outreachAttempted})
     </span>
   )
 }
@@ -639,6 +657,7 @@ function ContactCard({
                 Sin contacto
               </span>
             ) : null}
+          <DomainMemoryBadge website={contact.website} />
         </div>
         <div className="px-2 flex items-center justify-center w-8">
           {open ? (

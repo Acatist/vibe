@@ -1,6 +1,6 @@
 # Vibe Reach — Documentación Técnica de Desarrollo
 
-> **Versión:** 1.9.0  
+> **Versión:** 2.0.0  
 > **Última actualización:** 22 de marzo de 2026  
 > **Stack:** Chrome Extension MV3 · React 19 · TypeScript 5.8 · Tailwind CSS v4 · Zustand v5 · Vite
 
@@ -36,7 +36,7 @@
 26. [Decisiones de Diseño y Convenciones](#26-decisiones-de-diseño-y-convenciones)
 27. [Roadmap y Trabajo Pendiente](#27-roadmap-y-trabajo-pendiente)
 
-> Fases implementadas: 1–17 · Build limpio · 48 tests en verde ✅
+> Fases implementadas: 1–18 · Build limpio · 48 tests en verde ✅
 
 ---
 
@@ -2555,6 +2555,72 @@ Dos bugs interactuando:
 - `src/components/layout/AppShell.tsx` — estructura main/inner-div
 - `src/sidepanel/views/SettingsView.tsx` — acordeones completos
 
+### Fase 18 — Auditoría completa y mejoras del motor (v2.0)
+
+**Objetivo:** Auditoría exhaustiva del sistema, corrección de bugs críticos, creación de nuevos stores de memoria, mejoras en los motores de afinidad/scraping/campaña, y nuevos componentes UI para revisión y métricas.
+
+**Quick Fixes (F1):**
+
+- `truncated-text.tsx`: `break-words` → `break-all` (Tailwind v4 lint fix)
+- `DevTestPanel.tsx`: `z-[2147483640]` → `z-2147483640`, `max-w-[260px]` → `max-w-65` (Tailwind v4 syntax)
+- `ai.service.ts`: Guard en `getAIProvider()` — `if (sorted.length === 0) throw Error(...)` evita crash cuando no hay proveedores configurados
+- `AppShell.tsx`: `DevTestPanel` solo se renderiza cuando `debugMode === true` (antes era siempre visible)
+
+**Data Layer (F2):**
+
+- `OutreachStatus` tipo granular: `'pending' | 'mailto-opened' | 'form-submitted' | 'linkedin-queued' | 'sent' | 'failed'` — reemplaza el ambiguo `'pending' | 'sent' | 'failed'`
+- `CampaignStatus`: nuevo estado `'awaiting-review'` — la campaña se pausa tras generar mensajes si `campaign.requiresApproval === true`
+- `contacts.store.ts`: Dedup reescrito — de email/hostname a firma form-centric (`contactFormUrl + organization + name`). Dos contactos de la misma org con formularios distintos NO son duplicados.
+- **Nuevo store** `domain.memory.store.ts` (`DomainMemoryRecord`): historial por dominio — `contactsDiscovered`, `outreachAttempted`, `formSubmissions`, `emailsOpened`, `lastContactDate`. Persistido en `chrome.storage.local`.
+- **Nuevo store** `form.patterns.store.ts` (`FormPattern`): guarda field mappings exitosos por dominio para reutilizar en futuros envíos. Persistido en `chrome.storage.local`.
+
+**Engine Layer (F3):**
+
+- `outreach.production.ts`: Cada método devuelve su `OutreachStatus` real (`'mailto-opened'`, `'form-submitted'`, `'linkedin-queued'`). Energy keys corregidos (`'sendEmail': 5`, `'sendLinkedInMessage': 3`, separados del coste de `'submitForm'`).
+- `CampaignsView handleSend()`: Usa datos reales de `useInvestigationStore` (targetCategory, targetSubcategory, websites reales de contactos).
+- `LiveSendView`: Reescrita — eliminado `Math.random()` fake loop, ahora lee mensajes reactivamente desde `useCampaignStore`.
+- **Nuevo utility** `channel.router.ts` (`getBestChannel(contact, domainMemory)`): prioriza form sin CAPTCHA > form con CAPTCHA probado > email > form CAPTCHA (último recurso) > none.
+- `affinity.engine.ts`: `heuristicScore()` extendido con bonus por `contactMethod` (form=+15, both=+10, email=+5) y bonus por historial de DomainMemory (+10).
+- `scraping.scorer.ts`: Nueva señal `domainMemoryBonus` (+15 para dominios conocidos). Peso AI/heurístico cambiado de 70/30 a 80/20.
+- `form.submit.engine.ts`: Antes de inyección consulta `FormPatternStore` para reutilizar mappings conocidos. Tras éxito, guarda el patrón.
+- `campaign.engine.ts`: 
+  - Paso 4 (outreach) usa `getBestChannel()` + `useDomainMemoryStore` para tracking automático por dominio.
+  - Si `campaign.requiresApproval`, la campaña se pausa con status `'awaiting-review'` tras generar mensajes (paso 3).
+  - Nueva función `resumeAfterReview(campaignId, approvedContactIds)` ejecuta pasos 4-5 solo con contactos aprobados.
+
+**UI Layer (F4):**
+
+- **`ReviewCheckpointView`** (CampaignsView): Se muestra cuando un campaign tiene status `'awaiting-review'`. Lista de contactos con checkboxes, preview del mensaje, y botón "Enviar aprobados" que llama a `resumeAfterReview()`.
+- **`DomainMemoryBadge`** (ContactsView): Micro-badge "✓ Contactado (N)" en violeta en cada `ContactCard` cuyo dominio tiene historial de outreach.
+- **`DomainMemorySummary`** (ReportsView): Panel con métricas globales (dominios, outreach, formularios, emails) y top 5 dominios por actividad.
+
+**Archivos creados:**
+- `src/store/domain.memory.store.ts`
+- `src/store/form.patterns.store.ts`
+- `src/utils/channel.router.ts`
+
+**Archivos modificados (16):**
+- `src/components/ui/truncated-text.tsx`
+- `src/sidepanel/views/DevTestPanel.tsx`
+- `src/services/ai.service.ts`
+- `src/components/layout/AppShell.tsx`
+- `src/core/types/campaign.types.ts`
+- `src/core/types/campaign-engine.types.ts`
+- `src/core/types/affinity.types.ts`
+- `src/core/types/energy.types.ts`
+- `src/core/constants/actions.ts`
+- `src/services/outreach/outreach.interface.ts`
+- `src/services/outreach/outreach.production.ts`
+- `src/services/outreach/form.submit.engine.ts`
+- `src/services/scraping/scraping.scorer.ts`
+- `src/engine/affinity/affinity.engine.ts`
+- `src/engine/campaign/campaign.engine.ts`
+- `src/store/contacts.store.ts`
+- `src/store/index.ts`
+- `src/sidepanel/views/CampaignsView.tsx`
+- `src/sidepanel/views/ContactsView.tsx`
+- `src/sidepanel/views/ReportsView.tsx`
+
 ---
 
 ## 26. Decisiones de Diseño y Convenciones
@@ -2676,27 +2742,41 @@ Dos bugs interactuando:
 - [x] `useEnergy` hook — `ENERGY_GET` en mount, sin `onChange` local
 - [x] `AppShell` — `ENERGY_GET` en mount para sync inmediato
 
+### Completado (Fase 18 — Auditoría completa y mejoras del motor v2.0)
+
+- [x] Guard de crash en `getAIProvider()` cuando no hay proveedores configurados
+- [x] DevTestPanel solo visible en `debugMode`
+- [x] `OutreachStatus` granular (6 estados) reemplaza `'pending' | 'sent' | 'failed'`
+- [x] Dedup de contactos form-centric (contactFormUrl + organization + name)
+- [x] `DomainMemoryStore` — historial persistente por dominio
+- [x] `FormPatternsStore` — library de field mappings reutilizables
+- [x] `ChannelRouter` — selección inteligente de canal (form vs email)
+- [x] Energy keys separados por canal (`sendEmail: 5`, `sendLinkedInMessage: 3`)
+- [x] `executeCampaign()` usa `getBestChannel()` + DomainMemory tracking
+- [x] `campaign.requiresApproval` → pausa con `'awaiting-review'` + `resumeAfterReview()`
+- [x] `ReviewCheckpointView` en CampaignsView — revisión manual antes de envío
+- [x] `DomainMemoryBadge` en ContactsView — badge "Contactado" por dominio
+- [x] `DomainMemorySummary` en ReportsView — métricas globales de memoria
+- [x] LiveSendView reescrita sin fake random — datos reales del store
+- [x] AffinityEngine extendido con bonificaciones por canal y dominio
+- [x] ScrapingScorer con bonus DomainMemory y peso AI 80/20
+- [x] FormSubmitEngine reutiliza patrones de envío exitosos
+
 ### Pendiente inmediato
 
 - [ ] Integrar `ProductionOutreachService` con SMTP real y LinkedIn API
-- [ ] Feedback visual en `CampaignsView` del progreso de `executeCampaign()` (paso a paso)
-- [ ] Conectar motor de afinidad real al pipeline de scraping para scoring automático de contactos
 - [ ] Manejo guiado de CAPTCHA — pausa con aviso al usuario para resolver manualmente
 
 ### Medio plazo
 
-- [ ] Sistema de cola de campañas con estado `queued → running → completed`
 - [ ] Soporte más idiomas en i18n (actuales: `en`, `es`)
 - [ ] Exportación de contactos a CSV/Excel
-- [ ] Deduplicate contacts across investigations (email-global)
 
 ### Largo plazo
 
-- [ ] Dashboard real con métricas de campañas (contactos descubiertos, tasa de respuesta)
-- [ ] Modo de preview antes de enviar mensajes
 - [ ] Gestión de follow-ups automáticos
 - [ ] Soporte para LinkedIn y otras redes profesionales
-- [ ] Panel de analytics de outreach
+- [ ] Panel de analytics de outreach avanzado
 
 ---
 

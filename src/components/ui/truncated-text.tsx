@@ -49,7 +49,7 @@ export function TruncatedText({
           </C>
         </TooltipTrigger>
         {isTruncated && (
-          <TooltipContent side={side} className="max-w-64 break-words text-xs leading-snug">
+          <TooltipContent side={side} className="max-w-64 break-all text-xs leading-snug">
             {text}
           </TooltipContent>
         )}

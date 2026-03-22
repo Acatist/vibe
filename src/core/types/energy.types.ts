@@ -11,6 +11,8 @@ export type ActionCostKey =
   | 'scrapeUrl' // 1 unit per URL scraped — 10 scrapes = 1% energy
   | 'formFill'
   | 'submitForm'
+  | 'sendEmail'
+  | 'sendLinkedInMessage'
   | 'like'
   | 'follow'
   | 'unfollow'

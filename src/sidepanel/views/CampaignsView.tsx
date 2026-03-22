@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Campaign, CampaignStatus } from '@core/types/campaign.types'
 import type { Contact } from '@core/types/contact.types'
 import { useCampaignStore } from '@store/campaign.store'
 import { useContactsStore } from '@store/contacts.store'
+import { useInvestigationStore } from '@store/investigation.store'
 import { getAIProvider } from '@services/ai.service'
-import { executeCampaign } from '@engine/campaign'
+import { executeCampaign, resumeAfterReview } from '@engine/campaign'
 import { Logger } from '@services/logger.service'
 import {
   ChevronDown,
@@ -196,6 +197,11 @@ const STATUS_CONFIG: Record<
     cls: 'bg-green-500/10 text-green-400 border-green-500/30',
     icon: CheckCircle2,
   },
+  'awaiting-review': {
+    label: 'Pendiente revisión',
+    cls: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+    icon: Eye,
+  },
   failed: {
     label: 'Fallida',
     cls: 'bg-red-500/10 text-red-400 border-red-500/30',
@@ -257,72 +263,163 @@ function StatusBadge({ status }: { status: CampaignStatus }) {
   )
 }
 
+// ─── Review checkpoint view ────────────────────────────────────────────────
+
+function ReviewCheckpointView({
+  campaign,
+  onResume,
+}: {
+  campaign: MockCampaign
+  onResume: () => void
+}) {
+  const storeMessages = useCampaignStore(
+    (s) => s.campaigns.find((c) => c.id === campaign.id)?.messages ?? [],
+  )
+  const allContacts = useContactsStore((s) => s.contacts)
+  const [approved, setApproved] = useState<Set<string>>(() => {
+    const ids = new Set<string>()
+    storeMessages.forEach((m) => ids.add(m.contactId))
+    return ids
+  })
+  const [resuming, setResuming] = useState(false)
+
+  function toggleContact(id: string) {
+    setApproved((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function handleResume() {
+    if (approved.size === 0 || resuming) return
+    setResuming(true)
+    try {
+      await resumeAfterReview(campaign.id, Array.from(approved))
+    } catch {
+      // Error handled internally by engine
+    }
+    setResuming(false)
+    onResume()
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 space-y-2">
+        <div className="flex items-center gap-2">
+          <Eye className="w-4 h-4 text-amber-400" />
+          <p className="text-xs font-semibold text-amber-400">Revisión de mensajes</p>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Se generaron {storeMessages.length} mensajes. Selecciona los contactos aprobados y pulsa
+          "Enviar aprobados" para continuar.
+        </p>
+      </div>
+
+      {/* Contact list with checkboxes */}
+      <div className="rounded-xl border border-border overflow-hidden">
+        {storeMessages.map((msg, idx) => {
+          const contact = allContacts.find((c) => c.id === msg.contactId)
+          const isApproved = approved.has(msg.contactId)
+          return (
+            <div
+              key={msg.contactId}
+              className={`flex items-start gap-2.5 px-3 py-2.5 cursor-pointer transition-colors ${
+                isApproved ? 'bg-primary/5' : 'opacity-50'
+              } ${idx < storeMessages.length - 1 ? 'border-b border-border' : ''}`}
+              onClick={() => toggleContact(msg.contactId)}
+            >
+              <input
+                type="checkbox"
+                checked={isApproved}
+                onChange={() => toggleContact(msg.contactId)}
+                className="mt-0.5 accent-primary shrink-0"
+              />
+              <div className="flex-1 min-w-0 space-y-0.5">
+                <p className="text-xs font-medium truncate">
+                  {contact?.organization ?? contact?.name ?? msg.contactId}
+                </p>
+                {msg.emailSubject && (
+                  <p className="text-[11px] text-muted-foreground truncate">
+                    <span className="font-medium">Asunto:</span> {msg.emailSubject}
+                  </p>
+                )}
+                <p className="text-[11px] text-muted-foreground line-clamp-2">
+                  {msg.channel === 'contactForm'
+                    ? msg.contactFormMessage
+                    : msg.emailBody}
+                </p>
+              </div>
+              <span className="text-[10px] text-muted-foreground shrink-0 mt-0.5">
+                {msg.channel === 'contactForm' ? 'Form' : 'Email'}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Actions */}
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          className="flex-1 h-8 text-xs gap-1"
+          disabled={approved.size === 0 || resuming}
+          onClick={handleResume}
+        >
+          {resuming ? (
+            <Loader2 className="w-3 h-3 animate-spin" />
+          ) : (
+            <Send className="w-3 h-3" />
+          )}
+          Enviar aprobados ({approved.size})
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 // ─── Live send view ─────────────────────────────────────────────────────────
 
 function LiveSendView({ campaign }: { campaign: MockCampaign }) {
-  const [rows, setRows] = useState<SendRow[]>(() =>
-    campaign.contacts.map((c) => ({
+  // Read real messages from the campaign store reactively
+  const storeMessages = useCampaignStore(
+    (s) => s.campaigns.find((c) => c.id === campaign.id)?.messages ?? [],
+  )
+  const campaignStatus = useCampaignStore(
+    (s) => s.campaigns.find((c) => c.id === campaign.id)?.status,
+  )
+  const rowRefs = useRef<(HTMLDivElement | null)[]>([])
+
+  // Map store messages to UI rows
+  const rows: SendRow[] = campaign.contacts.map((c, idx) => {
+    const msg = storeMessages.find((m) => m.contactId === c.name) ?? storeMessages[idx]
+    let status: SendStatus = 'waiting'
+    let progress = 0
+    if (msg) {
+      if (msg.status === 'pending') {
+        status = 'sending'
+        progress = 30
+      } else if (msg.status === 'failed') {
+        status = 'failed'
+        progress = 100
+      } else {
+        // All success states: mailto-opened, form-submitted, linkedin-queued, sent
+        status = 'sent'
+        progress = 100
+      }
+    }
+    return {
       name: c.name,
       email: c.email,
       category: c.category,
       score: c.score,
-      status: 'waiting' as SendStatus,
-      progress: 0,
-    })),
-  )
-  const [finished, setFinished] = useState(false)
-  const rowRefs = useRef<(HTMLDivElement | null)[]>([])
-  const cancelledRef = useRef(false)
-
-  useEffect(() => {
-    cancelledRef.current = false
-
-    async function processContacts() {
-      for (let idx = 0; idx < campaign.contacts.length; idx++) {
-        if (cancelledRef.current) break
-
-        setRows((prev) =>
-          prev.map((r, i) => (i === idx ? { ...r, status: 'sending', progress: 0 } : r)),
-        )
-        setTimeout(() => {
-          if (!cancelledRef.current)
-            rowRefs.current[idx]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-        }, 120)
-
-        await new Promise<void>((resolve) => {
-          const duration = 2000 + Math.random() * 1600
-          const startTime = performance.now()
-          function tick(now: number) {
-            if (cancelledRef.current) {
-              resolve()
-              return
-            }
-            const pct = Math.min(100, ((now - startTime) / duration) * 100)
-            setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, progress: pct } : r)))
-            if (pct < 100) {
-              requestAnimationFrame(tick)
-            } else {
-              const failed = Math.random() < 0.1
-              setRows((prev) =>
-                prev.map((r, i) =>
-                  i === idx ? { ...r, status: failed ? 'failed' : 'sent', progress: 100 } : r,
-                ),
-              )
-              setTimeout(resolve, 460)
-            }
-          }
-          requestAnimationFrame(tick)
-        })
-      }
-      if (!cancelledRef.current) setFinished(true)
+      status,
+      progress,
     }
+  })
 
-    processContacts()
-    return () => {
-      cancelledRef.current = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const finished = campaignStatus === 'completed' || campaignStatus === 'failed'
 
   const sentCount = rows.filter((r) => r.status === 'sent').length
   const failedCount = rows.filter((r) => r.status === 'failed').length
@@ -561,12 +658,27 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
     const realCampaign = storeCampaigns.find((c) => c.id === campaign.id)
     if (realCampaign) {
       const log = Logger.create('CampaignsView')
+
+      // Resolve real params from the investigation
+      const inv = useInvestigationStore.getState().investigations.find(
+        (i) => i.id === realCampaign.investigationId,
+      )
+      const brief = useInvestigationStore.getState().activeBrief
+      const targetCategory = brief?.affinityCategory ?? inv?.plan?.targetAudiences?.[0] ?? ''
+      const targetSubcategory = brief?.affinitySubcategory ?? ''
+      // Build target URLs from the campaign's contacts' websites (not from email domains)
+      const campaignContacts = allContacts.filter((c) => realCampaign.contactIds.includes(c.id))
+      const targetUrls = campaignContacts
+        .map((c) => c.website)
+        .filter(Boolean)
+        .slice(0, 10)
+
       executeCampaign(
         realCampaign,
-        [campaign.contacts[0]?.email ? `https://${campaign.contacts[0].email.split('@')[1]}` : ''],
+        targetUrls.length > 0 ? targetUrls : [realCampaign.prompt],
         realCampaign.prompt,
-        '',
-        '',
+        targetCategory,
+        targetSubcategory,
       ).catch((e) => log.error('Campaign execution failed', (e as Error).message))
     }
   }
@@ -708,16 +820,34 @@ export function CampaignsView({ onNavigate: _ }: CampaignsViewProps) {
 
       {/* ── EN CURSO TAB ── */}
       {tab === 'running' &&
-        (activeLiveCampaign ? (
-          <LiveSendView
-            key={`live-${liveKey}-${activeLiveCampaign.id}`}
-            campaign={activeLiveCampaign}
-          />
-        ) : (
-          <p className="text-xs text-muted-foreground text-center py-8">
-            No hay campañas en curso. Pulsa "Enviar" en una campaña.
-          </p>
-        ))}
+        (() => {
+          const awaitingReview = allCampaigns.find((c) => c.status === 'awaiting-review')
+          if (awaitingReview) {
+            return (
+              <ReviewCheckpointView
+                key={`review-${awaitingReview.id}`}
+                campaign={awaitingReview}
+                onResume={() => {
+                  setActiveLiveCampaign(awaitingReview)
+                  setLiveKey((k) => k + 1)
+                }}
+              />
+            )
+          }
+          if (activeLiveCampaign) {
+            return (
+              <LiveSendView
+                key={`live-${liveKey}-${activeLiveCampaign.id}`}
+                campaign={activeLiveCampaign}
+              />
+            )
+          }
+          return (
+            <p className="text-xs text-muted-foreground text-center py-8">
+              No hay campañas en curso. Pulsa "Enviar" en una campaña.
+            </p>
+          )
+        })()}
 
       {/* ── TODAS / COMPLETADAS TAB ── */}
       {tab !== 'running' &&

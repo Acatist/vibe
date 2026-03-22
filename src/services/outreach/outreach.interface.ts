@@ -4,10 +4,14 @@ import type { Contact } from '@core/types/contact.types'
 // Outreach Service — Strategy Interface
 // ─────────────────────────────────────────────
 
+import type { OutreachStatus } from '@core/types/campaign.types'
+
 export interface OutreachResult {
   success: boolean
   /** Whether the action was simulated (no real side-effect) */
   simulated: boolean
+  /** Granular status of the outreach action */
+  status?: OutreachStatus
   error?: string
 }
 

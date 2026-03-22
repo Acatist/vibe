@@ -115,7 +115,7 @@ export function DevTestPanel({ onNavigate }: DevTestPanelProps) {
         : 'text-muted-foreground'
 
   return (
-    <div className="fixed bottom-3 left-3 z-[2147483640] max-w-[260px]">
+    <div className="fixed bottom-3 left-3 z-2147483640 max-w-65">
       <div className="rounded-xl border border-yellow-500/40 bg-background/95 backdrop-blur-sm shadow-xl overflow-hidden">
 
         {/* Header toggle */}

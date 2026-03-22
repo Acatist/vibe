@@ -16,6 +16,8 @@ import { Logger } from '@services/logger.service'
 import { useCampaignStore } from '@store/campaign.store'
 import { useContactsStore } from '@store/contacts.store'
 import { useReportsStore } from '@store/reports.store'
+import { useDomainMemoryStore } from '@store/domain.memory.store'
+import { getBestChannel } from '@utils/channel.router'
 
 const log = Logger.create('CampaignEngine')
 
@@ -158,34 +160,74 @@ export async function executeCampaign(
   }))
   useCampaignStore.getState().setMessages(campaign.id, storeMessages)
 
+  // ── Awaiting-review checkpoint ─────────────────────────────────────────
+  // When the campaign requires manual approval, pause here and return a
+  // partial result. The UI shows a ReviewCheckpointView where the user can
+  // approve/edit messages, then call resumeAfterReview() to continue.
+  if (campaign.requiresApproval) {
+    useCampaignStore.getState().updateCampaignStatus(campaign.id, 'awaiting-review')
+    log.info(`Campaign "${campaign.name}" paused for manual review (${outreachMessages.length} messages)`)
+
+    const energyAfter = energyService.getState().totalConsumed
+    return {
+      campaignId: campaign.id,
+      contacts,
+      highAffinityCount,
+      outreachResults: [],
+      energyUsage: {
+        pagesVisited: targetUrls.length,
+        aiRequests: outreachMessages.length + affinityResults.length,
+        automationActions: 0,
+        totalConsumed: energyAfter - energyBefore,
+      },
+      durationMs: performance.now() - startTime,
+      simulated,
+      awaitingReview: true,
+    }
+  }
+
   // ── Step 4: Execute outreach ───────────────────────────────────────────
   emitProgress(onProgress, 3, 'Sending outreach…')
   const outreachResults: ContactOutreachResult[] = []
+  const domainMemory = useDomainMemoryStore.getState()
+
   for (let i = 0; i < outreachMessages.length; i++) {
     const { contact, message } = outreachMessages[i]
     const affinityResult = affinityResults[i].result
 
     let outreachResult
     if (message) {
-      const isFormContact =
-        contact.contactMethod === 'form' || contact.contactMethod === 'both'
+      const contactDomain = contact.website || contact.contactFormUrl || ''
+      const domainRecord = domainMemory.getDomain(contactDomain)
+      const channel = getBestChannel(contact, domainRecord)
       const formUrl = contact.contactFormUrl || contact.contactPage || ''
 
-      if (isFormContact && formUrl) {
-        // Primary channel: submit the contact form with AI-mapped field values
+      if (channel === 'form' && formUrl) {
         const formData: Record<string, string> = message.formFieldMapping
           ? { ...message.formFieldMapping }
           : { message: message.contactFormMessage }
         outreachResult = await outreach.submitForm(formUrl, formData)
         log.info(`Form submitted for ${contact.name} at ${formUrl}`)
-      } else if (contact.email) {
-        // Fallback: send email if no form URL is available but email exists
+
+        // Track in DomainMemory
+        if (outreachResult.success) {
+          domainMemory.incrementField(contactDomain, 'formSubmissions')
+        }
+      } else if (channel === 'email' && contact.email) {
         outreachResult = await outreach.sendEmail(contact, message.emailSubject, message.emailBody)
         log.info(`Email sent to ${contact.name} (${contact.email})`)
+
+        // Track in DomainMemory
+        if (outreachResult.success) {
+          domainMemory.incrementField(contactDomain, 'emailsOpened')
+        }
       } else {
         outreachResult = { success: false, simulated, error: 'No valid contact channel (no form URL and no email)' }
         log.warn(`No contact channel for ${contact.name}`)
       }
+
+      // Track outreach attempt regardless of success
+      domainMemory.incrementField(contactDomain, 'outreachAttempted')
 
       // Update message status
       useCampaignStore
@@ -193,7 +235,7 @@ export async function executeCampaign(
         .updateMessageStatus(
           campaign.id,
           contact.id,
-          outreachResult.success ? 'sent' : 'failed',
+          outreachResult.status ?? (outreachResult.success ? 'sent' : 'failed'),
           outreachResult.error,
         )
     } else {
@@ -279,6 +321,115 @@ export async function executeCampaign(
     highAffinityCount,
     outreachResults,
     energyUsage,
+    durationMs,
+    simulated,
+  }
+}
+
+/**
+ * Resume a campaign that was paused for manual review.
+ *
+ * Called after the user approves (and optionally edits) messages.
+ * Only the approved contacts proceed to outreach.
+ */
+export async function resumeAfterReview(
+  campaignId: string,
+  approvedContactIds: string[],
+  onProgress?: ProgressCallback,
+): Promise<CampaignExecutionResult> {
+  const startTime = performance.now()
+  const simulated = isSimulation()
+  const energyBefore = energyService.getState().totalConsumed
+
+  const campaign = useCampaignStore.getState().getCampaign(campaignId)
+  if (!campaign) throw new Error(`Campaign ${campaignId} not found`)
+
+  const outreach = createOutreachService()
+  const domainMemory = useDomainMemoryStore.getState()
+
+  log.info(`Resuming campaign "${campaign.name}" after review — ${approvedContactIds.length} contacts approved`)
+
+  // Switch status back to running
+  useCampaignStore.getState().updateCampaignStatus(campaignId, 'running')
+
+  // Resolve approved contacts and their pre-generated messages
+  const allContacts = useContactsStore.getState().contacts
+  const contacts = approvedContactIds
+    .map((id) => allContacts.find((c) => c.id === id))
+    .filter((c): c is Contact => !!c)
+
+  // ── Step 4: Execute outreach ─────────────────────────────────────────
+  emitProgress(onProgress, 3, 'Sending outreach…')
+  const outreachResults: ContactOutreachResult[] = []
+
+  for (const contact of contacts) {
+    const storedMessage = campaign.messages.find((m) => m.contactId === contact.id)
+    if (!storedMessage || storedMessage.status === 'failed') {
+      outreachResults.push({
+        contactId: contact.id,
+        contactName: contact.name,
+        affinity: { score: contact.relevanceScore, classification: 'medium', reasoning: '' },
+        outreach: { success: false, simulated, error: 'No approved message' },
+      })
+      continue
+    }
+
+    const contactDomain = contact.website || contact.contactFormUrl || ''
+    const domainRecord = domainMemory.getDomain(contactDomain)
+    const channel = getBestChannel(contact, domainRecord)
+    const formUrl = contact.contactFormUrl || contact.contactPage || ''
+    let outreachResult
+
+    if (channel === 'form' && formUrl) {
+      const formData: Record<string, string> = storedMessage.formSubmissionData
+        ? { ...storedMessage.formSubmissionData }
+        : { message: storedMessage.contactFormMessage }
+      outreachResult = await outreach.submitForm(formUrl, formData)
+      if (outreachResult.success) domainMemory.incrementField(contactDomain, 'formSubmissions')
+    } else if (channel === 'email' && contact.email) {
+      outreachResult = await outreach.sendEmail(contact, storedMessage.emailSubject, storedMessage.emailBody)
+      if (outreachResult.success) domainMemory.incrementField(contactDomain, 'emailsOpened')
+    } else {
+      outreachResult = { success: false, simulated, error: 'No valid contact channel' }
+    }
+
+    domainMemory.incrementField(contactDomain, 'outreachAttempted')
+    useCampaignStore
+      .getState()
+      .updateMessageStatus(
+        campaignId,
+        contact.id,
+        outreachResult.status ?? (outreachResult.success ? 'sent' : 'failed'),
+        outreachResult.error,
+      )
+
+    outreachResults.push({
+      contactId: contact.id,
+      contactName: contact.name,
+      affinity: { score: contact.relevanceScore, classification: 'medium', reasoning: '' },
+      outreach: outreachResult,
+    })
+  }
+
+  // ── Step 5: Complete ─────────────────────────────────────────────────
+  emitProgress(onProgress, 4, 'Generating report…')
+  useCampaignStore.getState().completeCampaign(campaignId)
+
+  const energyAfter = energyService.getState().totalConsumed
+  const durationMs = performance.now() - startTime
+  log.info(`Campaign "${campaign.name}" completed after review in ${Math.round(durationMs)}ms`)
+
+  return {
+    campaignId,
+    contacts,
+    highAffinityCount: 0,
+    outreachResults,
+    energyUsage: {
+      pagesVisited: 0,
+      aiRequests: 0,
+      automationActions: outreachResults.filter((r) => r.outreach.success).length,
+      totalConsumed: energyAfter - energyBefore,
+    },
     durationMs,
     simulated,
   }

@@ -4,6 +4,7 @@ import type {
   AffinityClassification,
 } from '@core/types/affinity.types'
 import { getAIProvider } from '@services/ai.service'
+import { useDomainMemoryStore } from '@store/domain.memory.store'
 import { Logger } from '@services/logger.service'
 
 const log = Logger.create('AffinityEngine')
@@ -15,7 +16,7 @@ function classify(score: number): AffinityClassification {
 }
 
 /**
- * Heuristic fallback: keyword overlap scoring.
+ * Heuristic fallback: keyword overlap scoring + contact method quality + domain history.
  * Used when the AI provider is unavailable or fails.
  */
 function heuristicScore(input: AffinityInput): AffinityResult {
@@ -35,16 +36,31 @@ function heuristicScore(input: AffinityInput): AffinityResult {
 
   const matches = contactWords.filter((w) => campaignWords.has(w))
   const maxPossible = Math.max(contactWords.length, 1)
-  const raw = Math.round((matches.length / maxPossible) * 100)
-  const score = Math.min(raw, 100)
+  let raw = Math.round((matches.length / maxPossible) * 100)
+
+  // ── Contact method quality bonus ─────────────────────────────────────────
+  const method = input.contactMethod ?? 'none'
+  if (method === 'form') raw += 15
+  else if (method === 'both') raw += 10
+  else if (method === 'email') raw += 5
+
+  // ── Domain history bonus (from DomainMemory) ────────────────────────────
+  if (input.contactDomain) {
+    const memory = useDomainMemoryStore.getState().getDomain(input.contactDomain)
+    if (memory && memory.outreachAttempted > 0) {
+      raw += 10
+    }
+  }
+
+  const score = Math.max(0, Math.min(raw, 100))
 
   return {
     score,
     classification: classify(score),
     reasoning:
       matches.length > 0
-        ? `Keyword overlap: ${matches.slice(0, 5).join(', ')} (heuristic)`
-        : 'No keyword overlap detected (heuristic)',
+        ? `Keyword overlap: ${matches.slice(0, 5).join(', ')} (heuristic, method:${method})`
+        : `No keyword overlap detected (heuristic, method:${method})`,
   }
 }
 

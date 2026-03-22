@@ -16,6 +16,7 @@
 import { MessageType } from '@core/types/message.types'
 import { Logger } from '@services/logger.service'
 import { energyService } from '@services/energy.service'
+import { useFormPatternsStore } from '@store/form.patterns.store'
 
 const log = Logger.create('FormSubmitEngine')
 
@@ -94,6 +95,14 @@ export class FormSubmitEngine {
 
       this._progress(contactId, 'Rellenando el formulario campo por campo…', 50)
 
+      // Merge known field mappings from FormPatternLibrary (if domain was submitted before)
+      let enrichedFormData = formData as Record<string, string>
+      const domainPattern = useFormPatternsStore.getState().getPattern(contactFormUrl)
+      if (domainPattern) {
+        log.info(`FormSubmitEngine: using saved pattern for domain (${domainPattern.successCount} prior successes)`)
+        enrichedFormData = { ...domainPattern.fieldMappings, ...enrichedFormData }
+      }
+
       // ── Step 4: Execute injected form-filler (async, with typing delays) ──
       // world: 'MAIN' → full access to page JS (React/Vue/Angular event hooks)
       let results: chrome.scripting.InjectionResult[] | undefined
@@ -101,7 +110,7 @@ export class FormSubmitEngine {
         results = await chrome.scripting.executeScript({
           target: { tabId },
           func: _injectedFillFormAndSubmit,
-          args: [formData as Record<string, string>],
+          args: [enrichedFormData as Record<string, string>],
           world: 'MAIN',
         })
       } catch (scriptErr) {
@@ -149,6 +158,18 @@ export class FormSubmitEngine {
       await this._delay(1500, 2500)
 
       this._done(contactId, true, result.confirmText ?? 'Formulario enviado correctamente')
+
+      // Save successful field mappings to FormPatternLibrary for future reuse
+      try {
+        useFormPatternsStore.getState().savePattern(contactFormUrl, {
+          fieldMappings: enrichedFormData,
+          submitSelector: '',
+          successSignal: result.confirmText ?? '',
+          lastSuccess: Date.now(),
+        })
+      } catch {
+        // Non-critical — don't fail the submission over pattern save errors
+      }
 
       // Close the tab 4 s after success so user can read the confirmation page
       if (tabId !== undefined) {
