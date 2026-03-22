@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   ChevronDown,
   ChevronUp,
@@ -13,6 +13,7 @@ import {
   MessageSquarePlus,
   Plus,
   CheckCircle2,
+  XCircle,
   Scan,
   X,
   AlertTriangle,
@@ -83,6 +84,11 @@ interface MockContact {
   score: number
   contactPage: string
   discarded?: boolean
+  // Form-centric fields
+  contactFormUrl?: string | null
+  contactMethod?: 'form' | 'email' | 'both' | 'none'
+  formFieldCount?: number
+  hasCaptcha?: boolean
 }
 
 const MOCK_CONTACTS: MockContact[] = [
@@ -159,7 +165,7 @@ function CategoryBadge({ category }: { category: string }) {
   const cls = CATEGORY_COLORS[category] ?? 'bg-muted text-muted-foreground border-border'
   return (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-medium ${cls}`}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] ${cls}`}
     >
       <Tag className="w-2.5 h-2.5" />
       {category}
@@ -201,9 +207,53 @@ function MessageComposer({ contact, context }: { contact: MockContact; context: 
   const { companyName, phone, email: senderEmail } = useBusinessStore()
   const [subject, setSubject] = useState('')
   const [body, setBody] = useState('')
-  const [sent, setSent] = useState(false)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
+
+  // Send pipeline state
+  type SendStatus = 'idle' | 'sending' | 'done' | 'error'
+  const [sendStatus, setSendStatus] = useState<SendStatus>('idle')
+  const [sendProgress, setSendProgress] = useState<{ step: string; pct: number }>({ step: '', pct: 0 })
+  const [sendConfirm, setSendConfirm] = useState<string | null>(null)
+  const [sendError, setSendError] = useState<string | null>(null)
+
+  // Determine primary send channel
+  const isFormContact =
+    contact.contactMethod === 'form' || contact.contactMethod === 'both'
+  const canSendViaForm = isFormContact && !!contact.contactFormUrl
+  const canSendViaEmail = !!contact.email
+
+  // Listen for FORM_SUBMIT_PROGRESS and FORM_SUBMIT_DONE from background
+  useEffect(() => {
+    if (typeof chrome === 'undefined' || !chrome.runtime?.onMessage) return
+    const handler = (msg: { type: string; payload: unknown }) => {
+      if (!msg?.type) return
+      const p = msg.payload as Record<string, unknown>
+      if (p?.contactId !== contact.id) return
+
+      if (msg.type === MessageType.FORM_SUBMIT_PROGRESS) {
+        setSendStatus('sending')
+        setSendProgress({ step: p.step as string, pct: p.pct as number })
+      } else if (msg.type === MessageType.FORM_SUBMIT_DONE) {
+        if (p.success) {
+          setSendStatus('done')
+          setSendConfirm((p.confirmText as string | undefined) ?? 'Formulario enviado correctamente')
+        } else {
+          setSendStatus('error')
+          setSendError((p.error as string | undefined) ?? 'Error desconocido al enviar')
+        }
+      }
+    }
+    chrome.runtime.onMessage.addListener(handler)
+    return () => chrome.runtime.onMessage.removeListener(handler)
+  }, [contact.id])
+
+  const resetSend = useCallback(() => {
+    setSendStatus('idle')
+    setSendProgress({ step: '', pct: 0 })
+    setSendConfirm(null)
+    setSendError(null)
+  }, [])
 
   async function handleGenerateWithAI() {
     setAiLoading(true)
@@ -225,6 +275,8 @@ function MessageComposer({ contact, context }: { contact: MockContact; context: 
         category: 'researcher',
         relevanceScore: contact.score,
         investigationId: '',
+        contactMethod: contact.contactMethod,
+        contactFormUrl: contact.contactFormUrl,
       }
       // Append sender identity so the AI can build a proper email signature
       const senderLines = [
@@ -240,8 +292,10 @@ function MessageComposer({ contact, context }: { contact: MockContact; context: 
         .trim()
       const result = await provider.generateMessages(fullContact, enrichedContext)
       if (result.success && result.data) {
-        setSubject(result.data.emailSubject)
-        setBody(result.data.emailBody)
+        // Use contactFormMessage as body when contact has a form, but always use emailSubject
+        const isFormFirst = contact.contactMethod === 'form' || contact.contactMethod === 'both'
+        setSubject(result.data.emailSubject ?? '')
+        setBody(isFormFirst ? result.data.contactFormMessage : result.data.emailBody)
       } else {
         setAiError('No se pudo generar el mensaje. Verifica la configuración de IA.')
       }
@@ -251,54 +305,107 @@ function MessageComposer({ contact, context }: { contact: MockContact; context: 
     setAiLoading(false)
   }
 
-  function handleSend() {
-    if (!subject.trim() || !body.trim()) return
-    setSent(true)
-    setTimeout(() => setSent(false), 3000)
-    setSubject('')
-    setBody('')
+  async function handleSend() {
+    if (!body.trim()) return
+    resetSend()
+
+    if (canSendViaForm) {
+      // ── Form submission pipeline ──────────────────────────────────────────
+      setSendStatus('sending')
+      setSendProgress({ step: 'Iniciando envío…', pct: 2 })
+      await messageService.send(MessageType.FORM_SUBMIT_START, {
+        contactId: contact.id,
+        contactFormUrl: contact.contactFormUrl!,
+        formData: {
+          nombre: companyName || undefined,
+          email: senderEmail || undefined,
+          empresa: companyName || undefined,
+          telefono: phone || undefined,
+          asunto: subject.trim() || undefined,
+          mensaje: body.trim(),
+        },
+      })
+      // Progress updates arrive via chrome.runtime.onMessage listener above
+    } else if (canSendViaEmail) {
+      // ── Email fallback via mailto: ─────────────────────────────────────────
+      const mailtoUrl =
+        `mailto:${encodeURIComponent(contact.email)}` +
+        `?subject=${encodeURIComponent(subject.trim())}` +
+        `&body=${encodeURIComponent(body.trim())}`
+      await chrome.tabs.create({ url: mailtoUrl, active: true })
+      setSendStatus('done')
+      setSendConfirm('Cliente de correo abierto con el mensaje pre-rellenado')
+    } else {
+      setSendStatus('error')
+      setSendError('Este contacto no tiene formulario ni email de contacto disponible')
+    }
   }
+
+  // Require both subject and body for all channels
+  const canSend = !!body.trim() && !!subject.trim()
 
   return (
     <div className="mt-3 pt-3 border-t border-border space-y-2">
+      {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1 min-w-0 overflow-hidden flex-1">
           <MessageSquarePlus className="w-3 h-3 shrink-0" />
           <span className="shrink-0">Nuevo mensaje ·</span>
-          <span className="text-primary normal-case font-normal truncate min-w-0">{contact.email}</span>
+          <span className="text-primary normal-case font-normal truncate min-w-0">
+            {canSendViaForm ? contact.contactFormUrl?.replace(/^https?:\/\//, '') : contact.email}
+          </span>
         </p>
-        <TooltipProvider delayDuration={300}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-6 w-6 p-0 shrink-0 border-primary/40 text-primary hover:bg-primary/10"
-                onClick={handleGenerateWithAI}
-                disabled={aiLoading}
-              >
-                {aiLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bot className="w-3 h-3" />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="text-xs">
-              {aiLoading ? 'Generando…' : 'Generar con IA'}
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <div className="flex items-center gap-1">
+          {/* Channel badge */}
+          {canSendViaForm ? (
+            <span className="text-[9px] border border-emerald-500/40 text-emerald-400 rounded px-1">
+              formulario
+            </span>
+          ) : canSendViaEmail ? (
+            <span className="text-[9px] border border-blue-500/40 text-blue-400 rounded px-1">
+              email
+            </span>
+          ) : null}
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 w-6 p-0 shrink-0 border-primary/40 text-primary hover:bg-primary/10"
+                  onClick={handleGenerateWithAI}
+                  disabled={aiLoading || sendStatus === 'sending'}
+                >
+                  {aiLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bot className="w-3 h-3" />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-xs">
+                {aiLoading ? 'Generando…' : 'Generar con IA'}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
       </div>
+
       {aiError && <p className="text-[10px] text-destructive">{aiError}</p>}
+
       <Input
         placeholder="Asunto del mensaje…"
         value={subject}
         onChange={(e) => setSubject(e.target.value)}
         className="h-7 text-xs"
+        disabled={sendStatus === 'sending'}
       />
+
       <Textarea
         placeholder="Escribe tu mensaje aquí… o pulsa 'Generar con IA'"
         value={body}
         onChange={(e) => setBody(e.target.value)}
         className="text-xs min-h-18 resize-none"
+        disabled={sendStatus === 'sending'}
       />
+
+      {/* Send button row */}
       <div className="flex items-center justify-between">
         <p className="text-[10px] text-muted-foreground">
           {body.length > 0 ? `${body.length} caracteres` : 'Campo vacío'}
@@ -306,11 +413,24 @@ function MessageComposer({ contact, context }: { contact: MockContact; context: 
         <Button
           size="sm"
           className="h-7 text-xs gap-1.5"
-          disabled={!subject.trim() || !body.trim()}
-          onClick={handleSend}
+          disabled={!canSend || sendStatus === 'sending'}
+          onClick={sendStatus === 'done' || sendStatus === 'error' ? resetSend : handleSend}
         >
-          {sent ? (
-            '✓ Enviado'
+          {sendStatus === 'sending' ? (
+            <>
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Enviando…
+            </>
+          ) : sendStatus === 'done' ? (
+            <>
+              <CheckCircle2 className="w-3 h-3" />
+              ✓ Enviado
+            </>
+          ) : sendStatus === 'error' ? (
+            <>
+              <XCircle className="w-3 h-3" />
+              Reintentar
+            </>
           ) : (
             <>
               <Send className="w-3 h-3" />
@@ -319,6 +439,34 @@ function MessageComposer({ contact, context }: { contact: MockContact; context: 
           )}
         </Button>
       </div>
+
+      {/* Live progress overlay */}
+      {sendStatus === 'sending' && (
+        <div className="rounded-lg border border-primary/25 bg-primary/5 p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
+            <span className="text-[11px] text-primary leading-snug">{sendProgress.step}</span>
+          </div>
+          <Progress value={sendProgress.pct} className="h-1.5" />
+          <p className="text-[9px] text-muted-foreground text-right">{sendProgress.pct}%</p>
+        </div>
+      )}
+
+      {/* Success confirmation */}
+      {sendStatus === 'done' && sendConfirm && (
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 flex items-start gap-2">
+          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" />
+          <p className="text-[11px] text-emerald-400 leading-snug">{sendConfirm}</p>
+        </div>
+      )}
+
+      {/* Error feedback */}
+      {sendStatus === 'error' && sendError && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 flex items-start gap-2">
+          <XCircle className="w-3.5 h-3.5 text-destructive shrink-0 mt-0.5" />
+          <p className="text-[11px] text-destructive leading-snug">{sendError}</p>
+        </div>
+      )}
     </div>
   )
 }
@@ -354,28 +502,43 @@ function ContactCard({
             )}
             <p className="text-xs font-medium truncate">{contact.company}</p>
           </div>
-          <TooltipProvider delayDuration={300}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <a
-                  href={`https://${contact.website}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={(e) => e.stopPropagation()}
-                  className="text-[11px] text-emerald-500 hover:text-emerald-400 flex items-center gap-1 transition-colors mt-0.5 overflow-hidden"
-                >
-                  <ExternalLink className="w-2.5 h-2.5 shrink-0" />
-                  <span className="truncate">{contact.website}</span>
-                </a>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                {contact.website}
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <a
+                    href={contact.website.startsWith('http') ? contact.website : `https://${contact.website}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-[11px] text-emerald-500 hover:text-emerald-400 flex items-center gap-1 transition-colors overflow-hidden"
+                  >
+                    <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                    <span className="truncate">{contact.website.replace(/^https?:\/\//, '')}</span>
+                  </a>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">
+                  {contact.website}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
         </div>
-        <div className="px-3 py-2.5 flex items-center">
+        <div className="px-3 py-2.5 flex flex-col items-end gap-1">
           <CategoryBadge category={contact.category} />
+          {contact.contactMethod === 'form' || contact.contactMethod === 'both' ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border bg-emerald-500/15 text-emerald-500 border-emerald-500/20">
+                ✓ Formulario
+              </span>
+            ) : contact.contactMethod === 'email' ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border bg-blue-500/15 text-blue-400 border-blue-500/20">
+                ✉ Email
+              </span>
+            ) : contact.contactMethod === 'none' ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border bg-muted text-muted-foreground border-border">
+                Sin contacto
+              </span>
+            ) : null}
         </div>
         <div className="px-2 flex items-center justify-center w-8">
           {open ? (
@@ -450,7 +613,7 @@ function ContactCard({
                 size="sm"
                 variant="outline"
                 className="flex-1 h-7 text-xs gap-1"
-                onClick={() => window.open(`https://${contact.website}`, '_blank')}
+                onClick={() => window.open(contact.website.startsWith('http') ? contact.website : `https://${contact.website}`, '_blank')}
               >
                 <Globe className="w-3 h-3" />
                 Visitar sitio
@@ -509,6 +672,9 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
     liveCurrentUrl,
     liveScrapingTotal,
     livePagesScanned,
+    liveDomainsChecked,
+    liveFormsFound,
+    liveCurrentDomain,
   } = useInvestigationStore()
 
   // Block duplicate campaigns for the same investigation
@@ -545,6 +711,10 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
         score: c.relevanceScore,
         contactPage: c.contactPage,
         discarded: c.discarded,
+        contactFormUrl: c.contactFormUrl,
+        contactMethod: c.contactMethod,
+        formFieldCount: c.formFields?.length ?? 0,
+        hasCaptcha: c.hasCaptcha,
       }))
     : hasEverAddedContact
       ? []
@@ -681,6 +851,17 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
                 )}
                 className="h-1.5"
               />
+              <div className="flex gap-3 text-[10px] text-muted-foreground pt-0.5">
+                <span className="tabular-nums">🌐 {liveDomainsChecked} dominios</span>
+                <span className="tabular-nums">📋 {liveFormsFound} formularios</span>
+              </div>
+            </div>
+          )}
+
+          {liveCurrentDomain && (
+            <div className="flex items-center gap-1.5">
+              <Globe className="w-2.5 h-2.5 text-emerald-500 shrink-0 animate-pulse" />
+              <span className="text-[10px] text-muted-foreground truncate">{liveCurrentDomain}</span>
             </div>
           )}
 

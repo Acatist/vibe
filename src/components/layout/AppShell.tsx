@@ -9,6 +9,7 @@ import { CampaignsView } from '@/sidepanel/views/CampaignsView'
 import { HistoryView } from '@/sidepanel/views/HistoryView'
 import { ReportsView } from '@/sidepanel/views/ReportsView'
 import { SettingsView } from '@/sidepanel/views/SettingsView'
+import { DevTestPanel } from '@/sidepanel/views/DevTestPanel'
 import { MessageType } from '@core/types/message.types'
 import { messageService } from '@services/message.service'
 import { useInvestigationStore } from '@store/investigation.store'
@@ -99,6 +100,9 @@ export function AppShell() {
             currentUrl: p.currentUrl ?? '',
             total: p.targetCount,
             pagesScanned: p.pagesScanned ?? 0,
+            domainsChecked: p.domainsChecked ?? 0,
+            formsFound: p.formsFound ?? 0,
+            currentDomain: p.currentDomain ?? '',
           })
         } else {
           // Treat any terminal status as done so the progress card is hidden.
@@ -112,10 +116,10 @@ export function AppShell() {
         const brief = useInvestigationStore.getState().activeBrief
         const contact: Contact = {
           id: crypto.randomUUID(),
-          name: c.name || formatEmailToName(c.email),
+          name: c.name || formatEmailToName(c.email || 'unknown'),
           role: c.role || '',
           organization: c.organization || '',
-          email: c.email,
+          email: c.email || '',
           website: c.website || '',
           contactPage: c.contactPage || '',
           specialization: c.specialization || '',
@@ -133,6 +137,12 @@ export function AppShell() {
           relevanceScore: typeof c.discoveryScore === 'number' ? c.discoveryScore : 50,
           investigationId: p.invId,
           discarded: !!c.discarded,
+          // Form-centric fields
+          contactFormUrl: c.contactFormUrl ?? null,
+          formFields: c.formFields ?? [],
+          contactMethod: c.contactMethod ?? (c.email ? 'email' : 'none'),
+          domainMeta: c.domainMeta,
+          hasCaptcha: c.hasCaptcha ?? false,
         }
         addContacts([contact])
         addContactIds(p.invId, [contact.id])
@@ -169,6 +179,8 @@ export function AppShell() {
           </ErrorBoundary>
         </main>
       </div>
+      {/* DEV TEST — provisional floating panel, remove when no longer needed */}
+      <DevTestPanel onNavigate={setActiveTab} />
     </div>
   )
 }

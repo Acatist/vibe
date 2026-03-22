@@ -12,6 +12,8 @@ export interface OutreachMessage {
   status: 'pending' | 'sent' | 'failed'
   sentAt: number | null
   error: string | null
+  /** Pre-mapped values for each form field, keyed by field name */
+  formSubmissionData?: Record<string, string>
 }
 
 export interface Campaign {

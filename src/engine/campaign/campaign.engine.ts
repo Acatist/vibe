@@ -60,33 +60,48 @@ export async function executeCampaign(
   // Mark campaign as running
   useCampaignStore.getState().startCampaign(campaign.id)
 
-  // ── Step 1: Discover contacts ──────────────────────────────────────────
-  emitProgress(onProgress, 0, 'Discovering contacts…')
-  const allScraped = []
-  for (const url of targetUrls) {
-    const scraped = await scraper.discoverContacts(url)
-    allScraped.push(...scraped)
-  }
-  log.info(`Discovered ${allScraped.length} contacts from ${targetUrls.length} URLs`)
+  // ── Step 1: Resolve contacts ──────────────────────────────────────────
+  // Primary path: use contacts already discovered by the investigation scraper.
+  // These contacts carry full form metadata (contactFormUrl, formFields, contactMethod).
+  // Fall back to legacy scraping only if no store contacts are linked.
+  emitProgress(onProgress, 0, 'Resolving contacts…')
+  const storeContacts = campaign.contactIds
+    .map((id) => useContactsStore.getState().contacts.find((c) => c.id === id))
+    .filter((c): c is Contact => !!c)
 
-  // Persist contacts to store
-  const contacts: Contact[] = allScraped.map((sc) => ({
-    id: crypto.randomUUID(),
-    name: sc.name || sc.organization,
-    role: sc.role,
-    organization: sc.organization,
-    email: sc.email,
-    website: sc.website,
-    contactPage: sc.contactPage,
-    specialization: sc.specialization,
-    topics: sc.topics,
-    region: sc.region,
-    recentArticles: [],
-    category: 'researcher' as const,
-    relevanceScore: 0,
-    investigationId: campaign.investigationId,
-  }))
-  useContactsStore.getState().addContacts(contacts)
+  let contacts: Contact[]
+  if (storeContacts.length > 0) {
+    // Only include contactable entries (form or email channel available)
+    contacts = storeContacts.filter(
+      (c) => c.contactMethod === 'form' || c.contactMethod === 'both' || c.email,
+    )
+    log.info(`Using ${contacts.length} contacts from investigation store (${storeContacts.length} total linked)`)
+  } else {
+    // Legacy fallback: run scraper on provided target URLs
+    const allScraped = []
+    for (const url of targetUrls) {
+      const scraped = await scraper.discoverContacts(url)
+      allScraped.push(...scraped)
+    }
+    log.info(`Legacy scrape: discovered ${allScraped.length} contacts from ${targetUrls.length} URLs`)
+    contacts = allScraped.map((sc) => ({
+      id: crypto.randomUUID(),
+      name: sc.name || sc.organization,
+      role: sc.role,
+      organization: sc.organization,
+      email: sc.email,
+      website: sc.website,
+      contactPage: sc.contactPage,
+      specialization: sc.specialization,
+      topics: sc.topics,
+      region: sc.region,
+      recentArticles: [],
+      category: 'researcher' as const,
+      relevanceScore: 0,
+      investigationId: campaign.investigationId,
+    }))
+    useContactsStore.getState().addContacts(contacts)
+  }
 
   // ── Step 2: Evaluate affinity ──────────────────────────────────────────
   emitProgress(onProgress, 1, 'Evaluating affinity…')
@@ -127,14 +142,16 @@ export async function executeCampaign(
     }
   }
 
-  // Persist messages to store
+  // Persist messages to store — channel chosen per contact method
   const storeMessages = outreachMessages.map(({ contact, message }) => ({
     contactId: contact.id,
     emailSubject: message?.emailSubject ?? '',
     emailBody: message?.emailBody ?? '',
     contactFormMessage: message?.contactFormMessage ?? '',
     followUpMessage: message?.followUpMessage ?? '',
-    channel: 'email' as const,
+    channel: (contact.contactMethod === 'form' || contact.contactMethod === 'both'
+      ? 'contactForm'
+      : 'email') as 'email' | 'contactForm',
     status: 'pending' as const,
     sentAt: null,
     error: null,
@@ -150,7 +167,26 @@ export async function executeCampaign(
 
     let outreachResult
     if (message) {
-      outreachResult = await outreach.sendEmail(contact, message.emailSubject, message.emailBody)
+      const isFormContact =
+        contact.contactMethod === 'form' || contact.contactMethod === 'both'
+      const formUrl = contact.contactFormUrl || contact.contactPage || ''
+
+      if (isFormContact && formUrl) {
+        // Primary channel: submit the contact form with AI-mapped field values
+        const formData: Record<string, string> = message.formFieldMapping
+          ? { ...message.formFieldMapping }
+          : { message: message.contactFormMessage }
+        outreachResult = await outreach.submitForm(formUrl, formData)
+        log.info(`Form submitted for ${contact.name} at ${formUrl}`)
+      } else if (contact.email) {
+        // Fallback: send email if no form URL is available but email exists
+        outreachResult = await outreach.sendEmail(contact, message.emailSubject, message.emailBody)
+        log.info(`Email sent to ${contact.name} (${contact.email})`)
+      } else {
+        outreachResult = { success: false, simulated, error: 'No valid contact channel (no form URL and no email)' }
+        log.warn(`No contact channel for ${contact.name}`)
+      }
+
       // Update message status
       useCampaignStore
         .getState()
@@ -203,7 +239,7 @@ export async function executeCampaign(
       campaignType: 'simulation',
       subject: '',
       period: new Date().toLocaleDateString('es-ES'),
-      contactCount: allScraped.length,
+      contactCount: contacts.length,
       sentCount: successCount,
       failedCount: outreachResults.length - successCount,
       responseCount: 0,
@@ -226,7 +262,7 @@ export async function executeCampaign(
       includeDate: true,
       simulation: {
         pagesVisited: targetUrls.length,
-        contactsDiscovered: allScraped.length,
+        contactsDiscovered: contacts.length,
         highAffinityCount,
         emailsWouldSend: successCount,
         formsWouldSubmit: 0,
@@ -239,7 +275,7 @@ export async function executeCampaign(
 
   return {
     campaignId: campaign.id,
-    contacts: allScraped,
+    contacts,
     highAffinityCount,
     outreachResults,
     energyUsage,

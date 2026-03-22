@@ -7,6 +7,7 @@ import { stealthService } from '@services/stealth.service'
 import { Logger } from '@services/logger.service'
 import { extensionConfig } from '@config/extension.config'
 import { scrapingOrchestrator } from '@services/scraping/scraping.orchestrator'
+import { formSubmitEngine } from '@services/outreach/form.submit.engine'
 
 const log = Logger.create('Background')
 
@@ -98,6 +99,20 @@ function registerMessageHandlers() {
   messageService.on(MessageType.SCRAPING_RESUME, () => scrapingOrchestrator.resume())
   messageService.on(MessageType.SCRAPING_CANCEL, () => scrapingOrchestrator.cancel())
 
+  // Dev/Test — single-domain probe
+  messageService.on(MessageType.DEV_TEST_PROBE, ({ domain }) => {
+    scrapingOrchestrator.probeOneDomain(domain).catch((e) =>
+      log.error('DEV_TEST_PROBE failed', (e as Error).message),
+    )
+  })
+
+  // Form submission pipeline
+  messageService.on(MessageType.FORM_SUBMIT_START, (payload) => {
+    formSubmitEngine.submit(payload).catch((e) =>
+      log.error('FORM_SUBMIT_START handler failed', (e as Error).message),
+    )
+  })
+
   log.debug('Message handlers registered')
 }
 
@@ -160,11 +175,26 @@ function setupTabEvents() {
 }
 
 // ─────────────────────────────────────────────
+// Service Worker Lifecycle
+// ─────────────────────────────────────────────
+
+// Activate the new SW immediately on install — prevents Chrome from showing
+// "Status code: 3" when the old SW is still active during an extension update.
+self.addEventListener('install', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(self as any).skipWaiting()
+})
+
+self.addEventListener('activate', (event: Event) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(event as any).waitUntil((self as any).clients?.claim?.())
+})
+
+// ─────────────────────────────────────────────
 // Extension Install / Update
 // ─────────────────────────────────────────────
 
-// Init every time the service worker starts (covers wakeup after termination).
-// onInstalled / onStartup are NOT reliable for routine SW restarts in MV3.
+// Init once when the service worker starts (covers wakeup after termination).
 init().catch((e) => log.error('Init failed', e))
 
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
@@ -203,5 +233,4 @@ async function broadcastEnergyUpdate() {
   await messageService.broadcast(MessageType.ENERGY_UPDATED, state)
 }
 
-// Boot on SW activation
-init().catch((err) => log.error('Background init failed', err))
+// (init is already called at module top-level above; no second call needed)

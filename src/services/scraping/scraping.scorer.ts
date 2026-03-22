@@ -27,6 +27,11 @@ export interface CandidateData {
   emails: string[]
   contactPage: string
   url: string
+  // Form-centric signals
+  hasForm?: boolean
+  formFieldCount?: number
+  hasCaptcha?: boolean
+  contactMethod?: 'form' | 'email' | 'both' | 'none'
 }
 
 export interface CandidateScore {
@@ -218,6 +223,27 @@ export function scoreHeuristic(
     signals.push('spam:domain')
   }
 
+  // 9. Contact form signals (form-first scoring)
+  if (candidate.hasForm) {
+    score += 20
+    signals.push('has:contactForm')
+  }
+  if (candidate.formFieldCount && candidate.formFieldCount > 3) {
+    score += 10
+    signals.push(`form:${candidate.formFieldCount}fields`)
+  }
+  if (candidate.hasForm && !candidate.hasCaptcha) {
+    score += 5
+    signals.push('form:noCaptcha')
+  }
+  if (candidate.contactMethod === 'both') {
+    score += 10
+    signals.push('method:both')
+  } else if (candidate.contactMethod === 'form') {
+    score += 15
+    signals.push('method:form')
+  }
+
   // Clamp
   score = Math.max(0, Math.min(100, score))
 
@@ -253,8 +279,14 @@ Website: ${candidate.orgName} (${candidate.domain})
 Description: ${candidate.description}
 Keywords: ${candidate.keywords.join(', ')}
 Has email: ${candidate.emails.length > 0 ? 'yes' : 'no'}
+Has contact form: ${candidate.hasForm ? 'yes' : 'no'}
+Contact method: ${candidate.contactMethod ?? 'unknown'}
+Form fields: ${candidate.formFieldCount ?? 0}
+Has CAPTCHA: ${candidate.hasCaptcha ? 'yes' : 'no'}
 
 Campaign objective: ${params.query}
+
+SCORING PRIORITY: Websites with contact forms are MORE valuable than those with only email. A form with 3+ fields and no CAPTCHA is ideal.
 
 Respond ONLY with JSON: {"score": <0-100>, "reasoning": "<one sentence>"}`
 

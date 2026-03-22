@@ -30,6 +30,9 @@ interface InvestigationStore {
   liveCurrentUrl: string
   liveScrapingTotal: number
   livePagesScanned: number
+  liveDomainsChecked: number
+  liveFormsFound: number
+  liveCurrentDomain: string
 
   startInvestigation: (prompt: string, consistency: number) => string
   setPlan: (id: string, plan: InvestigationPlan) => void
@@ -53,6 +56,9 @@ interface InvestigationStore {
     currentUrl: string
     total: number
     pagesScanned?: number
+    domainsChecked?: number
+    formsFound?: number
+    currentDomain?: string
   }) => void
   /** Reset live scraping state when scraping finishes or errors. */
   setLiveScrapingDone: () => void
@@ -71,17 +77,23 @@ export const useInvestigationStore = create<InvestigationStore>()(
       liveCurrentUrl: '',
       liveScrapingTotal: 0,
       livePagesScanned: 0,
+      liveDomainsChecked: 0,
+      liveFormsFound: 0,
+      liveCurrentDomain: '',
 
       setLastAnalysisMarkdown: (md) => set({ lastAnalysisMarkdown: md }),
       setLastFinishReason: (reason) => set({ lastFinishReason: reason }),
       setActiveBrief: (brief) => set({ activeBrief: brief }),
-      setLiveScrapingProgress: ({ status, contactsFound, currentUrl, total, pagesScanned }) =>
+      setLiveScrapingProgress: ({ status, contactsFound, currentUrl, total, pagesScanned, domainsChecked, formsFound, currentDomain }) =>
         set({
           liveScrapingStatus: status,
           liveContactsFound: contactsFound,
           liveCurrentUrl: currentUrl,
           liveScrapingTotal: total,
           livePagesScanned: pagesScanned ?? 0,
+          liveDomainsChecked: domainsChecked ?? 0,
+          liveFormsFound: formsFound ?? 0,
+          liveCurrentDomain: currentDomain ?? '',
         }),
       setLiveScrapingDone: () =>
         set({
@@ -90,6 +102,9 @@ export const useInvestigationStore = create<InvestigationStore>()(
           liveCurrentUrl: '',
           liveScrapingTotal: 0,
           livePagesScanned: 0,
+          liveDomainsChecked: 0,
+          liveFormsFound: 0,
+          liveCurrentDomain: '',
         }),
 
       startInvestigation: (prompt, consistency) => {

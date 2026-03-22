@@ -38,18 +38,21 @@ export function TruncatedText({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const C = Tag as any
 
+  // Always render Tooltip in uncontrolled mode.
+  // When not truncated, omit TooltipContent so the tooltip never shows.
   return (
     <TooltipProvider delayDuration={400}>
-      {/* open={false} when not truncated so hover does nothing */}
-      <Tooltip open={isTruncated ? undefined : false}>
+      <Tooltip>
         <TooltipTrigger asChild>
           <C ref={ref} className={cn('truncate', className)}>
             {text}
           </C>
         </TooltipTrigger>
-        <TooltipContent side={side} className="max-w-64 break-words text-xs leading-snug">
-          {text}
-        </TooltipContent>
+        {isTruncated && (
+          <TooltipContent side={side} className="max-w-64 break-words text-xs leading-snug">
+            {text}
+          </TooltipContent>
+        )}
       </Tooltip>
     </TooltipProvider>
   )

@@ -12,6 +12,7 @@ import { sessionService } from '@services/session.service'
 import { messageService } from '@services/message.service'
 import { MessageType } from '@core/types/message.types'
 import { Logger } from '@services/logger.service'
+import { activateScanner, deactivateScanner } from './views/ScannerOverlay'
 
 const log = Logger.create('ContentScript')
 
@@ -25,6 +26,16 @@ async function init() {
   messageService.on(MessageType.STEALTH_SET_PROFILE, ({ profile }) => {
     stealthEngine.configure(profile)
     log.info(`Profile updated: ${profile}`)
+  })
+
+  // Listen for scanner overlay messages from the orchestrator
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === MessageType.SCANNER_ACTIVATE && msg.payload) {
+      const { domain, domainsChecked, totalDomains } = msg.payload
+      activateScanner(domain, domainsChecked, totalDomains)
+    } else if (msg.type === MessageType.SCANNER_DEACTIVATE) {
+      deactivateScanner()
+    }
   })
 
   // Ready

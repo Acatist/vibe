@@ -57,6 +57,19 @@ export enum MessageType {
   SCRAPING_CONTACT = 'SCRAPING_CONTACT',
   SCRAPING_COMPLETE = 'SCRAPING_COMPLETE',
   SCRAPING_ERROR = 'SCRAPING_ERROR',
+
+  // Scanner overlay (content script)
+  SCANNER_ACTIVATE = 'SCANNER_ACTIVATE',
+  SCANNER_DEACTIVATE = 'SCANNER_DEACTIVATE',
+
+  // Dev/Test — single-domain probe (provisional)
+  DEV_TEST_PROBE = 'DEV_TEST_PROBE',
+  DEV_TEST_RESULT = 'DEV_TEST_RESULT',
+
+  // Form submission pipeline (sidepanel → background → tab → sidepanel)
+  FORM_SUBMIT_START = 'FORM_SUBMIT_START',
+  FORM_SUBMIT_PROGRESS = 'FORM_SUBMIT_PROGRESS',
+  FORM_SUBMIT_DONE = 'FORM_SUBMIT_DONE',
 }
 
 export interface MessagePayloadMap {
@@ -112,13 +125,16 @@ export interface MessagePayloadMap {
   [MessageType.SCRAPING_CANCEL]: { invId: string }
   [MessageType.SCRAPING_PROGRESS]: {
     invId: string
-    phase: 'seeding' | 'google' | 'contacts'
+    phase: 'criteria' | 'seeding' | 'google' | 'probing' | 'contacts'
     currentUrl: string
+    currentDomain: string
     urlsFound: number
     contactsFound: number
     discardedCount: number
     targetCount: number
     pagesScanned: number
+    domainsChecked: number
+    formsFound: number
     energyLeft: number
     status: 'running' | 'paused' | 'cancelled' | 'complete' | 'error'
   }
@@ -139,6 +155,12 @@ export interface MessagePayloadMap {
       matchSignals: string[]
       /** true when the contact didn't meet the acceptance threshold */
       discarded?: boolean
+      // Form-centric fields
+      contactFormUrl?: string | null
+      formFields?: Array<{ name: string; type: string; label?: string; required?: boolean }>
+      contactMethod?: 'form' | 'email' | 'both' | 'none'
+      domainMeta?: { title: string; description: string; favicon?: string; language?: string }
+      hasCaptcha?: boolean
     }
   }
   [MessageType.SCRAPING_COMPLETE]: {
@@ -159,6 +181,57 @@ export interface MessagePayloadMap {
   [MessageType.SCRAPING_ERROR]: {
     invId: string
     error: string
+  }
+
+  // ── Scanner overlay ────────────────────────────────────────────────────
+  [MessageType.SCANNER_ACTIVATE]: {
+    domain: string
+    domainsChecked: number
+    totalDomains: number
+  }
+  [MessageType.SCANNER_DEACTIVATE]: void
+
+  // ── Dev/Test ───────────────────────────────────────────────────────────
+  [MessageType.DEV_TEST_PROBE]: { domain: string }
+  [MessageType.DEV_TEST_RESULT]: {
+    domain: string
+    error?: string
+    result?: {
+      hasForm: boolean
+      emails: string[]
+      contactMethod: string
+      contactPageUrl: string | null
+      hasCaptcha: boolean
+      domainMeta: { title: string; description: string; favicon?: string; language?: string }
+      formFields: Array<{ name: string; type: string; label?: string; required?: boolean }>
+      navigationsUsed: number
+    }
+  }
+
+  // ── Form submission ────────────────────────────────────────────────────
+  [MessageType.FORM_SUBMIT_START]: {
+    contactId: string
+    contactFormUrl: string
+    /** Fields to fill in the form */
+    formData: {
+      nombre?: string
+      email?: string
+      empresa?: string
+      telefono?: string
+      asunto?: string
+      mensaje: string
+    }
+  }
+  [MessageType.FORM_SUBMIT_PROGRESS]: {
+    contactId: string
+    step: string   // Human-readable description of the current step
+    pct: number    // 0-100
+  }
+  [MessageType.FORM_SUBMIT_DONE]: {
+    contactId: string
+    success: boolean
+    confirmText?: string  // Success message detected on the page
+    error?: string
   }
 }
 

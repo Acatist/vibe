@@ -3,6 +3,7 @@ import type {
   AIAnalysisResult,
   AIMessageResult,
   AIResponse,
+  AISearchCriteriaResult,
   TargetDiscoveryResult,
 } from '@core/types/ai.types'
 import type { Contact } from '@core/types/contact.types'
@@ -29,6 +30,7 @@ export interface AIProvider {
   analyzePrompt(prompt: string, consistency: number): Promise<AIResponse<AIAnalysisResult>>
   generateMessages(contact: Contact, context: string): Promise<AIResponse<AIMessageResult>>
   generateSearchTargets(brief: CampaignBrief): Promise<AIResponse<TargetDiscoveryResult>>
+  generateSearchCriteria(brief: CampaignBrief): Promise<AIResponse<AISearchCriteriaResult>>
   testConnection(): Promise<AIResponse<{ model: string }>>
   /** Raw completion — returns the model's text response without any prompt wrapping. */
   evaluate(prompt: string): Promise<AIResponse<string>>
@@ -148,8 +150,16 @@ Respond ONLY with valid JSON:
 }
 
 function buildMessagePrompt(contact: Contact, context: string): string {
+  const hasForm = contact.contactMethod === 'form' || contact.contactMethod === 'both'
+  const formFieldHint = contact.formFields?.length
+    ? `\nDETECTED FORM FIELDS: ${contact.formFields.map((f) => `${f.name} (${f.type}${f.required ? ', required' : ''})`).join(', ')}`
+    : ''
+  const domainHint = contact.domainMeta
+    ? `\nWEBSITE CONTEXT: "${contact.domainMeta.title}" — ${contact.domainMeta.description}`
+    : ''
+
   // context may optionally carry a SENDER: block appended by the UI
-  return `You are an expert business writer. Write a first-contact outreach email that feels personal, elegant, and completely human — not a template.
+  return `You are an expert business writer. Write a first-contact outreach message that feels personal, elegant, and completely human — not a template.
 
 RECIPIENT:
 - Organization: ${contact.organization || contact.name}
@@ -157,24 +167,30 @@ RECIPIENT:
 - Specialization: ${contact.specialization}
 - Topics: ${contact.topics.join(', ')}
 - Region: ${contact.region}
-- Affinity score: ${contact.relevanceScore}/100
+- Website: ${contact.website}
+- Contact method: ${contact.contactMethod || 'email'}
+- Affinity score: ${contact.relevanceScore}/100${domainHint}${formFieldHint}
 
 CAMPAIGN PURPOSE / SENDER INFO:
 ${context}
 
-EMAIL STRUCTURE — produce each section in the JSON fields below:
+${hasForm ? `PRIMARY OUTPUT: contactFormMessage — this is the MAIN message because the recipient has a web contact form.
+The message should be complete and self-contained (2-4 sentences), professional and collaborative.
+If form fields are listed above, also provide formFieldMapping that maps your content to those field names.` : `PRIMARY OUTPUT: emailBody — the recipient will be contacted by email.`}
+
+FIELDS TO PRODUCE (JSON):
   emailSubject  → max 8 words, specific to the recipient's work, never generic
-  emailBody     → a complete, ready-to-send plain-text email with this exact layout:
+  emailBody     → a complete, ready-to-send plain-text email with this layout:
 
       Estimado/a [appropriate salutation based on role],
 
-      [Intro paragraph — 2-3 sentences: name one concrete thing about their specialization
-       that actually resonates; show you read about them, not just their job title.]
+      [Intro — 2-3 sentences: reference something concrete about their work/site,
+       show genuine knowledge of what they do.]
 
-      [Middle paragraph — 2-3 sentences: who the sender is, what they do/offer, and
-       why it connects to the recipient's world. Confident, not salesy. No buzzwords.]
+      [Middle — 2-3 sentences: who the sender is, what they offer, and
+       why it connects to the recipient's world. Confident, not salesy.]
 
-      [Closing paragraph — 1-2 sentences: one soft CTA — a brief call, a reply,
+      [Closing — 1-2 sentences: one soft CTA — a brief call, a reply,
        or an exchange; easy to say yes to.]
 
       Atentamente,
@@ -183,8 +199,12 @@ EMAIL STRUCTURE — produce each section in the JSON fields below:
       [Sender email from SENDER INFO — omit if empty]
       [Sender phone from SENDER INFO — omit if empty]
 
-  contactFormMessage → 2-sentence condensed version for web contact forms (no greeting/signature)
+  contactFormMessage → 2-4 sentence version for web contact forms (no greeting/signature needed).
+                       Must be self-contained and professional. Reference something specific about
+                       the recipient's site/work to show it's not mass-sent.
   followUpMessage    → 2-3 sentence gentle nudge for one week later, assuming no reply
+  formFieldMapping   → (optional) JSON object mapping form field names to the text that should
+                       fill each field, e.g. {"nombre": "...", "email": "...", "mensaje": "..."}
 
 TONE RULES:
 - Language: Spanish by default; English if recipient region is clearly non-Spanish-speaking
@@ -198,7 +218,7 @@ Respond ONLY with valid JSON (no markdown wrapper):
   "emailSubject": "...",
   "emailBody": "...",
   "contactFormMessage": "...",
-  "followUpMessage": "..."
+  "followUpMessage": "..."${hasForm ? ',\n  "formFieldMapping": {}' : ''}
 }`
 }
 
@@ -234,6 +254,41 @@ Respond ONLY with valid JSON (no markdown, no explanation outside the JSON):
       "estimatedContacts": 15
     }
   ]
+}`
+}
+
+function buildSearchCriteriaPrompt(brief: CampaignBrief): string {
+  const contactDesc =
+    brief.contactType === 'corporate'
+      ? 'empresas y negocios'
+      : brief.contactType === 'individual'
+        ? 'profesionales independientes y consultores'
+        : 'ONGs, instituciones, organizaciones públicas y asociaciones'
+  return `You are a search strategist. Your task is to generate families of search engine queries that will help discover ${contactDesc} related to "${brief.affinityCategory}" (specifically "${brief.affinitySubcategory}") in "${brief.country}".
+
+Campaign objective: ${brief.description}
+Language: ${brief.language}
+Precision level: ${brief.consistency}/10 (${brief.consistency <= 3 ? 'broad' : brief.consistency <= 7 ? 'balanced' : 'high precision'})
+
+CRITICAL RULES:
+1. Generate ONLY search queries (strings to type into Google/Bing). NEVER output domain names, URLs, or website addresses.
+2. Each query family should target a different angle: industry directories, professional associations, regional listings, niche portals, etc.
+3. Include the word "contacto", "formulario", or "contact" in at least half of the queries to bias results toward pages with contact forms.
+4. Queries should be in ${brief.language} (matching the target market).
+5. Generate ${brief.consistency >= 7 ? '6-8' : '4-6'} families with 3-5 queries each.
+6. Higher priority families (lower number) should target more specific/niche queries.
+
+Respond ONLY with valid JSON (no markdown):
+{
+  "families": [
+    {
+      "category": "descriptive label for this group",
+      "queries": ["query 1", "query 2", "query 3"],
+      "rationale": "why this family is relevant",
+      "priority": 1
+    }
+  ],
+  "estimatedReach": 50
 }`
 }
 
@@ -292,6 +347,14 @@ function createOpenAIProvider(apiKey: string, model: string): AIProvider {
       try {
         const content = await call([{ role: 'user', content: buildTargetDiscoveryPrompt(brief) }])
         return { success: true, data: parseJSON<TargetDiscoveryResult>(content) }
+      } catch (e) {
+        return { success: false, error: (e as Error).message }
+      }
+    },
+    async generateSearchCriteria(brief) {
+      try {
+        const content = await call([{ role: 'user', content: buildSearchCriteriaPrompt(brief) }])
+        return { success: true, data: parseJSON<AISearchCriteriaResult>(content) }
       } catch (e) {
         return { success: false, error: (e as Error).message }
       }
@@ -371,6 +434,14 @@ function createGrokProvider(apiKey: string, model: string): AIProvider {
         return { success: false, error: (e as Error).message }
       }
     },
+    async generateSearchCriteria(brief) {
+      try {
+        const content = await call([{ role: 'user', content: buildSearchCriteriaPrompt(brief) }])
+        return { success: true, data: parseJSON<AISearchCriteriaResult>(content) }
+      } catch (e) {
+        return { success: false, error: (e as Error).message }
+      }
+    },
     async testConnection() {
       try {
         const res = await fetch('https://api.x.ai/v1/models', {
@@ -437,6 +508,14 @@ function createGoogleProvider(apiKey: string, model: string): AIProvider {
       try {
         const content = await call(buildTargetDiscoveryPrompt(brief))
         return { success: true, data: parseJSON<TargetDiscoveryResult>(content) }
+      } catch (e) {
+        return { success: false, error: (e as Error).message }
+      }
+    },
+    async generateSearchCriteria(brief) {
+      try {
+        const content = await call(buildSearchCriteriaPrompt(brief))
+        return { success: true, data: parseJSON<AISearchCriteriaResult>(content) }
       } catch (e) {
         return { success: false, error: (e as Error).message }
       }

@@ -26,10 +26,12 @@
  */
 
 import { MessageType } from '@core/types/message.types'
+import type { SearchCriteriaFamily } from '@core/types/ai.types'
 import { energyService } from '@services/energy.service'
 import { Logger } from '@services/logger.service'
 import { SessionEngine } from '@engine/stealth/session.engine'
 import { stealthService } from '@services/stealth.service'
+import { ContactPageProber, type ProbeResult } from './contact-page.prober'
 import {
   scoreHeuristic,
   scoreWithAI,
@@ -252,10 +254,18 @@ interface ScrapingSession extends ScrapingStartParams {
   /** Parallel query variants to maximise URL diversity */
   queryVariants: string[]
   currentVariantIdx: number
+  /** AI-generated search criteria families (new system) */
+  searchCriteriaFamilies: SearchCriteriaFamily[]
   /** AI-seeded target URLs (precise mode only) */
   seedUrls: string[]
   /** Counter for periodic history flush */
   _saveCounter: number
+  /** Domains checked in this session */
+  domainsChecked: number
+  /** Contact forms found in this session */
+  formsFound: number
+  /** Current domain being probed */
+  currentDomain: string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -418,75 +428,6 @@ function _isBlockedPage(): boolean {
   )
 }
 
-/**
- * Runs inside a contact/company page.
- * Returns extracted contact data, or null if the page yields nothing useful.
- */
-function _extractPageContacts(): PageContact {
-  const emails: string[] = []
-  const seenEmails = new Set<string>()
-
-  // 1. mailto: anchors
-  document.querySelectorAll<HTMLAnchorElement>('a[href^="mailto:"]').forEach((a) => {
-    const raw = a.href.replace('mailto:', '').split('?')[0].trim().toLowerCase()
-    if (raw.includes('@') && !seenEmails.has(raw)) {
-      seenEmails.add(raw)
-      emails.push(raw)
-    }
-  })
-
-  // 2. Regex over visible text
-  const bodyText = document.body?.innerText ?? ''
-  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
-  const textEmails = bodyText.match(emailRegex) ?? []
-  textEmails.forEach((e) => {
-    const norm = e.toLowerCase()
-    if (!seenEmails.has(norm)) {
-      seenEmails.add(norm)
-      emails.push(norm)
-    }
-  })
-
-  // 3. Page metadata
-  const ogSiteName =
-    document.querySelector<HTMLMetaElement>('meta[property="og:site_name"]')?.content?.trim() ?? ''
-  const title = document.title?.trim() ?? ''
-  const metaDesc =
-    document.querySelector<HTMLMetaElement>('meta[name="description"]')?.content?.trim() ?? ''
-  const metaKeywords =
-    document.querySelector<HTMLMetaElement>('meta[name="keywords"]')?.content?.trim() ?? ''
-
-  let domain = ''
-  try {
-    domain = new URL(window.location.href).hostname.replace('www.', '')
-  } catch {
-    domain = ''
-  }
-  const cleanTitle = title.replace(/\s*[-|–—·…]\s*.{0,60}$/, '').trim()
-  const orgName = ogSiteName || cleanTitle || domain
-
-  // 4. Contact page link
-  const contactHref =
-    document.querySelector<HTMLAnchorElement>(
-      'a[href*="contact"], a[href*="contacto"], a[href*="about"]',
-    )?.href ?? ''
-
-  const keywords = metaKeywords
-    .split(',')
-    .map((k) => k.trim())
-    .filter((k) => k.length > 1)
-    .slice(0, 8)
-
-  return {
-    emails,
-    orgName,
-    description: metaDesc.slice(0, 300),
-    keywords,
-    domain,
-    contactPage: contactHref,
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Orchestrator
 // ─────────────────────────────────────────────────────────────────────────────
@@ -536,8 +477,40 @@ class ScrapingOrchestrator {
       return
     }
 
-    // Build query variants from the campaign brief
-    const queryVariants = this._buildQueryVariants(params)
+    // Build query variants — first try AI criteria, fall back to heuristic builder
+    let queryVariants: string[] = []
+    let searchCriteriaFamilies: SearchCriteriaFamily[] = []
+
+    try {
+      const { getAIProvider } = await import('@services/ai.service')
+      const provider = getAIProvider()
+      const brief: import('@/providers/ai/ai.provider').CampaignBrief = {
+        contactType: params.contactType as import('@/providers/ai/ai.provider').ContactType,
+        affinityCategory: params.affinityCategory,
+        affinitySubcategory: params.affinitySubcategory,
+        country: params.country,
+        language: params.language,
+        consistency: params.consistency,
+        description: params.query,
+        reportLanguage: params.language,
+      }
+      const criteriaResult = await provider.generateSearchCriteria(brief)
+      if (criteriaResult.success && criteriaResult.data?.families?.length) {
+        searchCriteriaFamilies = criteriaResult.data.families
+          .sort((a, b) => a.priority - b.priority)
+        // Flatten families (by priority) into variant list
+        queryVariants = searchCriteriaFamilies.flatMap((f) => f.queries)
+        log.info(`AI generated ${searchCriteriaFamilies.length} criteria families (${queryVariants.length} queries)`)
+      }
+    } catch (err) {
+      log.warn('AI criteria generation failed, falling back to heuristic:', (err as Error).message)
+    }
+
+    // Fallback to heuristic query builder
+    if (queryVariants.length === 0) {
+      queryVariants = this._buildQueryVariants(params)
+    }
+
     const acceptThreshold = getAcceptanceThreshold(params.consistency, params.scrapingMode)
 
     log.info(
@@ -570,8 +543,12 @@ class ScrapingOrchestrator {
       currentEngineIdx: 0,
       queryVariants,
       currentVariantIdx: 0,
+      searchCriteriaFamilies,
       seedUrls: [],
       _saveCounter: 0,
+      domainsChecked: 0,
+      formsFound: 0,
+      currentDomain: '',
     }
 
     // Immediately notify the sidepanel that scraping has started.
@@ -640,6 +617,80 @@ class ScrapingOrchestrator {
 
   getStatus(): ScrapingStatus {
     return this.session?.status ?? 'idle'
+  }
+
+  /**
+   * DEV/TEST — Probe a single domain and broadcast DEV_TEST_RESULT.
+   * Opens a tab, runs ContactPageProber, then broadcasts the result.
+   * Does NOT interfere with any active scraping session.
+   */
+  async probeOneDomain(domain: string): Promise<void> {
+    log.info(`[DevTest] Probing domain: ${domain}`)
+
+    let tabId: number | undefined
+
+    try {
+      // Open a visible tab so the developer can watch the probe
+      const tab = await chrome.tabs.create({
+        url: `https://${domain}`,
+        active: true,
+      })
+
+      if (!tab.id) {
+        this._broadcastDevTestResult(domain, undefined, 'Could not open tab')
+        return
+      }
+
+      tabId = tab.id
+
+      // Wait for initial page load
+      await new Promise<void>((resolve) => {
+        let settled = false
+        const onUpdated = (id: number, changeInfo: { status?: string }) => {
+          if (id === tabId && changeInfo.status === 'complete') {
+            if (!settled) {
+              settled = true
+              chrome.tabs.onUpdated.removeListener(onUpdated)
+              resolve()
+            }
+          }
+        }
+        chrome.tabs.onUpdated.addListener(onUpdated)
+        setTimeout(() => {
+          if (!settled) {
+            settled = true
+            chrome.tabs.onUpdated.removeListener(onUpdated)
+            resolve()
+          }
+        }, 15_000)
+      })
+
+      const prober = new ContactPageProber(tabId, 6)
+      const result = await prober.probe(domain)
+
+      log.info(`[DevTest] Done: ${domain}`, {
+        hasForm: result.hasForm,
+        emails: result.emails,
+        contactMethod: result.contactMethod,
+        navigationsUsed: result.navigationsUsed,
+      })
+
+      this._broadcastDevTestResult(domain, result)
+    } catch (e) {
+      const msg = (e as Error).message
+      log.error(`[DevTest] Probe failed for ${domain}`, msg)
+      this._broadcastDevTestResult(domain, undefined, msg)
+    }
+    // Tab stays open intentionally so the dev can inspect the result
+  }
+
+  private _broadcastDevTestResult(domain: string, result?: ProbeResult, error?: string): void {
+    chrome.runtime
+      .sendMessage({
+        type: MessageType.DEV_TEST_RESULT,
+        payload: { domain, result, error },
+      })
+      .catch(() => {})
   }
 
   // ── Core run loop ──────────────────────────────────────────────────────────
@@ -758,23 +809,56 @@ class ScrapingOrchestrator {
 
           s.pagesScanned++
           this._lastProgressAt = Date.now()
-          this._broadcastProgress(url)
 
-          // Extract contact data — with subpage probing if needed
-          const pageData = await this._extractWithSubpageProbing(url, myRunId)
+          // ── Domain-level contact page probing (form-first) ──────────────
+          const domain = extractDomain(url)
+          s.currentDomain = domain
+          s.domainsChecked++
+          this._broadcastProgress(url, 'probing')
+
+          // Activate scanner overlay on the tab
+          this._broadcastScanner(domain, s.domainsChecked, s.targetCount)
+
+          const prober = new ContactPageProber(s.tabId, 6)
+          const probeResult = await prober.probe(domain)
           if (this._runId !== myRunId) return
 
-          if (pageData && pageData.emails.length > 0) {
-            // Filter out already-seen emails before evaluation
-            const freshEmails = pageData.emails.filter(
-              (e) => !s.seenEmails.has(e.toLowerCase()) && !history.hasEmail(e),
-            )
-            if (freshEmails.length > 0) {
-              pageData.emails = freshEmails
-              const res = await this._evaluateAndAccept(url, pageData, myRunId)
-              if (res === 'stale') return
+          // Deactivate scanner
+          this._deactivateScanner()
+
+          // Track navigations used by the prober
+          s.pagesScanned += probeResult.navigationsUsed
+
+          if (probeResult.hasForm) s.formsFound++
+
+          // Mark emails as seen
+          for (const e of probeResult.emails) {
+            if (!s.seenEmails.has(e.toLowerCase()) && !history.hasEmail(e)) {
+              s.seenEmails.add(e.toLowerCase())
+              history.addEmail(e)
             }
           }
+
+          // Build page data for scoring
+          const pageData: PageContact = {
+            emails: probeResult.emails,
+            orgName: probeResult.domainMeta.title || domain,
+            description: probeResult.domainMeta.description,
+            keywords: [],
+            domain,
+            contactPage: probeResult.contactPageUrl || url,
+          }
+
+          // Form-first: only accept domains that have a real contact form.
+          // Email-only contacts are skipped — outreach is via form submission, not email.
+          if (probeResult.hasForm) {
+            const res = await this._evaluateAndAccept(url, pageData, myRunId, probeResult)
+            if (res === 'stale') return
+          } else {
+            log.debug(`Skipped ${domain} — no contact form found (emails found: ${probeResult.emails.length})`)
+          }
+
+          this._broadcastProgress(url)
 
           consecutiveErrors = 0
 
@@ -844,66 +928,6 @@ class ScrapingOrchestrator {
   }
 
   /**
-   * Extract contacts from the current page. If no emails found, probes common
-   * subpages (/contact, /about, /team, /impressum) before giving up.
-   */
-  private async _extractWithSubpageProbing(
-    url: string,
-    myRunId: number,
-  ): Promise<PageContact | null> {
-    const pageData = await this._runInTab<PageContact>(_extractPageContacts)
-    if (this._runId !== myRunId) return null
-
-    if (pageData && pageData.emails.length > 0) return pageData
-
-    // Determine base URL for subpage probing
-    let base: string
-    try {
-      base = new URL(url).origin
-    } catch {
-      return pageData
-    }
-
-    const subpages = [
-      pageData?.contactPage, // First try the page's own contact link
-      `${base}/contact`,
-      `${base}/contacto`,
-      `${base}/about`,
-      `${base}/about-us`,
-      `${base}/team`,
-      `${base}/impressum`,
-      `${base}/kontakt`,
-    ].filter((p): p is string => !!p && p !== url && p !== base)
-
-    // Deduplicate subpages
-    const tried = new Set<string>([normalizeUrl(url)])
-    for (const sub of subpages) {
-      const normSub = normalizeUrl(sub)
-      if (tried.has(normSub)) continue
-      tried.add(normSub)
-
-      try {
-        await this._navigateTo(sub)
-        if (this._runId !== myRunId) return null
-        await this._delay(500, 1000)
-        const subData = await this._runInTab<PageContact>(_extractPageContacts)
-        if (subData?.emails.length) {
-          // Merge org data from main page if subpage lacks it
-          subData.orgName = subData.orgName || pageData?.orgName || ''
-          subData.description = subData.description || pageData?.description || ''
-          subData.keywords = subData.keywords.length ? subData.keywords : (pageData?.keywords ?? [])
-          subData.domain = subData.domain || pageData?.domain || ''
-          return subData
-        }
-      } catch {
-        /* subpage failed — try next */
-      }
-    }
-
-    return pageData // Return whatever we have (may have no emails)
-  }
-
-  /**
    * Evaluate a candidate page and accept/discard it based on scoring.
    * Marks emails as seen so they cannot be stored twice.
    */
@@ -911,6 +935,7 @@ class ScrapingOrchestrator {
     url: string,
     data: PageContact,
     myRunId: number,
+    probeResult?: ProbeResult,
   ): Promise<'accepted' | 'discarded' | 'stale'> {
     const s = this.session!
 
@@ -922,6 +947,10 @@ class ScrapingOrchestrator {
       emails: data.emails,
       contactPage: data.contactPage,
       url,
+      hasForm: probeResult?.hasForm,
+      formFieldCount: probeResult?.formFields?.length,
+      hasCaptcha: probeResult?.hasCaptcha,
+      contactMethod: probeResult?.contactMethod,
     }
 
     let scoreResult: CandidateScore
@@ -940,14 +969,14 @@ class ScrapingOrchestrator {
     }
 
     if (scoreResult.score >= s.acceptThreshold) {
-      const contact = this._buildContact(url, data, s, scoreResult)
+      const contact = this._buildContact(url, data, s, scoreResult, probeResult)
       s.contactsFound++
       this._broadcastContact(contact)
       this._broadcastProgress(url)
       return 'accepted'
     } else {
       s.discardedCount++
-      const contact = this._buildContact(url, data, s, scoreResult)
+      const contact = this._buildContact(url, data, s, scoreResult, probeResult)
       this._broadcastContact({ ...contact, discarded: true })
       log.debug(`Discarded ${candidate.domain} (score ${scoreResult.score} < ${s.acceptThreshold})`)
       return 'discarded'
@@ -1122,7 +1151,7 @@ class ScrapingOrchestrator {
 
   // ── Contact extraction ─────────────────────────────────────────────────────
 
-  private _buildContact(url: string, data: PageContact, s: ScrapingSession, score: CandidateScore) {
+  private _buildContact(url: string, data: PageContact, s: ScrapingSession, score: CandidateScore, probeResult?: ProbeResult) {
     // Infer region from URL TLD
     let region = 'International'
     try {
@@ -1150,15 +1179,15 @@ class ScrapingOrchestrator {
       /* keep default */
     }
 
-    const primaryEmail = data.emails[0]
+    const primaryEmail = data.emails[0] ?? ''
 
     return {
       name: data.orgName || data.domain,
       email: primaryEmail,
       role: '',
       organization: data.orgName || data.domain,
-      website: data.domain,
-      contactPage: data.contactPage || url,
+      website: data.domain ? `https://${data.domain}` : url,
+      contactPage: probeResult?.contactPageUrl || data.contactPage || url,
       specialization: data.description.slice(0, 200),
       topics: data.keywords.length
         ? data.keywords
@@ -1167,6 +1196,12 @@ class ScrapingOrchestrator {
       discoveryScore: score.score,
       classification: score.classification,
       matchSignals: score.matchSignals,
+      // Form-centric fields
+      contactFormUrl: probeResult?.contactPageUrl ?? null,
+      formFields: probeResult?.formFields ?? [],
+      contactMethod: probeResult?.contactMethod ?? (primaryEmail ? 'email' : 'none'),
+      domainMeta: probeResult?.domainMeta ?? { title: data.orgName, description: data.description },
+      hasCaptcha: probeResult?.hasCaptcha ?? false,
     }
   }
 
@@ -1308,11 +1343,14 @@ class ScrapingOrchestrator {
           invId: '',
           phase: 'contacts',
           currentUrl: '',
+          currentDomain: '',
           urlsFound: 0,
           contactsFound: 0,
           discardedCount: 0,
           targetCount: 0,
           pagesScanned: 0,
+          domainsChecked: 0,
+          formsFound: 0,
           energyLeft: energyService.getState().current,
           status: 'cancelled',
         },
@@ -1333,11 +1371,14 @@ class ScrapingOrchestrator {
           invId: s.invId,
           phase,
           currentUrl,
+          currentDomain: s.currentDomain,
           urlsFound: s.visitedUrls.size,
           contactsFound: s.contactsFound,
           discardedCount: s.discardedCount,
           targetCount: s.targetCount,
           pagesScanned: s.pagesScanned,
+          domainsChecked: s.domainsChecked,
+          formsFound: s.formsFound,
           energyLeft: energyService.getState().current,
           status: s.status,
         },
@@ -1361,6 +1402,11 @@ class ScrapingOrchestrator {
     classification: 'high' | 'medium' | 'low'
     matchSignals: string[]
     discarded?: boolean
+    contactFormUrl?: string | null
+    formFields?: Array<{ name: string; type: string; label?: string; required?: boolean }>
+    contactMethod?: 'form' | 'email' | 'both' | 'none'
+    domainMeta?: { title: string; description: string; favicon?: string; language?: string }
+    hasCaptcha?: boolean
   }): void {
     const s = this.session
     if (!s) return
@@ -1396,6 +1442,30 @@ class ScrapingOrchestrator {
       .sendMessage({
         type: MessageType.SCRAPING_ERROR,
         payload: { invId, error },
+      })
+      .catch(() => {})
+  }
+
+  // ── Scanner overlay ─────────────────────────────────────────────────────
+
+  private _broadcastScanner(domain: string, domainsChecked: number, totalDomains: number): void {
+    const s = this.session
+    if (!s) return
+    chrome.tabs
+      .sendMessage(s.tabId, {
+        type: MessageType.SCANNER_ACTIVATE,
+        payload: { domain, domainsChecked, totalDomains },
+      })
+      .catch(() => {})
+  }
+
+  private _deactivateScanner(): void {
+    const s = this.session
+    if (!s) return
+    chrome.tabs
+      .sendMessage(s.tabId, {
+        type: MessageType.SCANNER_DEACTIVATE,
+        payload: undefined,
       })
       .catch(() => {})
   }

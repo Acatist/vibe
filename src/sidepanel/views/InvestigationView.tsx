@@ -64,18 +64,18 @@ const CONTACT_TYPES: { value: ContactType; labelKey: string; icon: LucideIcon }[
 ]
 
 const LOCALE_NAMES: Record<string, string> = {
-  en: 'English',
-  es: 'Spanish',
-  fr: 'French',
-  de: 'German',
-  pt: 'Portuguese',
-  it: 'Italian',
-  zh: 'Chinese',
-  ja: 'Japanese',
-  ar: 'Arabic',
-  ru: 'Russian',
-  nl: 'Dutch',
-  pl: 'Polish',
+  en: 'Inglés',
+  es: 'Español',
+  fr: 'Francés',
+  de: 'Alemán',
+  pt: 'Portugués',
+  it: 'Italiano',
+  zh: 'Chino',
+  ja: 'Japonés',
+  ar: 'Árabe',
+  ru: 'Ruso',
+  nl: 'Neerlandés',
+  pl: 'Polaco',
 }
 
 // ── Battle.net bar colour class — kept for future re-enable
@@ -266,18 +266,18 @@ export function InvestigationView({ onNavigate }: InvestigationViewProps) {
     glowColor: 'rgba(var(--primary),0.35)',
     label:
       displayPercent <= 100
-        ? 'Standard'
+        ? 'Estándar'
         : displayPercent <= 200
           ? 'Plus'
           : displayPercent <= 300
             ? 'Pro'
             : displayPercent <= 400
-              ? 'Advanced'
+              ? 'Avanzado'
               : displayPercent <= 500
-                ? 'Elite'
+                ? 'Élite'
                 : displayPercent <= 700
                   ? 'Ultra'
-                  : 'Legendary',
+                  : 'Legendario',
   }
 
   // SVG ring
