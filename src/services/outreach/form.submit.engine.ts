@@ -25,12 +25,26 @@ export interface FormSubmitParams {
   contactId: string
   contactFormUrl: string
   formData: {
+    // ── Core identity & message ──────────────────────────────────────────
     nombre?: string
+    apellido?: string
     email?: string
     empresa?: string
     telefono?: string
     asunto?: string
     mensaje: string
+    // ── Extended fallback profile (covers extra form fields) ─────────────
+    cargo?: string
+    departamento?: string
+    website?: string
+    pais?: string
+    region?: string
+    ciudad?: string
+    industria?: string
+    tamanoEmpresa?: string
+    fuenteReferencia?: string
+    motivoConsulta?: string
+    idioma?: string
   }
 }
 
@@ -559,9 +573,9 @@ async function _injectedFillFormAndSubmit(
       return dl.nombre ?? dl.name
     }
 
-    // 5b. Last name — use company name as it's B2B
+    // 5b. Last name — prefer explicit apellido, fall back to company name for B2B
     if (/\b(lastname|last.name|apellido|surname|cognome)\b/i.test(combined)) {
-      return dl.empresa ?? dl.company ?? dl.nombre
+      return dl.apellido ?? dl.empresa ?? dl.company ?? dl.nombre
     }
 
     // 5c. Email
@@ -579,9 +593,65 @@ async function _injectedFillFormAndSubmit(
       return dl.empresa ?? dl.company
     }
 
-    // 5f. Website / URL fields — provide the sender's domain (optional, non-critical)
-    if (/\b(website|web|url|p[áa]gina.web|sitio)\b/i.test(combined)) {
-      return undefined // skip — we don't want to fill in random URLs
+    // 5f. Website / URL — use sender's website when known
+    if (/\b(website|web|url|p[áa]gina.?web|sitio.?web|homepage)\b/i.test(combined)) {
+      return dl.website
+    }
+
+    // 5g. Job title / professional role
+    if (/\b(cargo|job.?title|position|puesto|rol\b|role\b|t[íi]tulo.?prof|profession|profesi[oó]n)\b/i.test(combined)) {
+      return dl.cargo
+    }
+
+    // 5h. Department / division / area
+    if (/\b(departamento|department|dept\b|division|divisi[oó]n|[aá]rea)\b/i.test(combined)) {
+      return dl.departamento
+    }
+
+    // 5i. Country
+    if (/\b(pa[íi]s|country|nation|naci[oó]n)\b/i.test(combined)) {
+      return dl.pais
+    }
+
+    // 5j. Region / province / state / autonomous community
+    if (/\b(regi[oó]n|region|provincia|province|state|comunidad|autonom[íi]a)\b/i.test(combined)) {
+      return dl.region
+    }
+
+    // 5k. City / municipality
+    if (/\b(ciudad|city|localidad|municipio|poblaci[oó]n)\b/i.test(combined)) {
+      return dl.ciudad
+    }
+
+    // 5l. Industry / sector
+    if (
+      /\b(industria|industry|sector|[aá]mbito|campo)\b/i.test(combined) &&
+      !/\b(subindustria|sub.?industry)\b/i.test(combined)
+    ) {
+      return dl.industria
+    }
+
+    // 5m. Company size / number of employees
+    if (/\b(tama[ñn]o|size|employees|empleados|plantilla|trabajadores|headcount)\b/i.test(combined)) {
+      return dl.tamanoempresa
+    }
+
+    // 5n. How did you find us / referral source
+    if (/\b(c[oó]mo.nos|how.did|referencia|referral|source\b|fuente|conociste|encontraste)\b/i.test(combined)) {
+      return dl.fuentereferencia
+    }
+
+    // 5o. Inquiry reason / message type
+    if (/\b(motivo|reason|tipo.?consulta|inquiry.?type|consultation.?type|tipo.?mensaje|asunto.?tipo)\b/i.test(combined)) {
+      return dl.motivoconsulta
+    }
+
+    // 5p. Language preference (text inputs only — selects are handled by resolveSelectValue)
+    if (
+      el.tagName !== 'SELECT' &&
+      /\b(idioma|language|langue|sprache|lingua)\b/i.test(combined)
+    ) {
+      return dl.idioma
     }
 
     // 6. Last resort: any textarea that wasn't already matched → message body
@@ -592,26 +662,121 @@ async function _injectedFillFormAndSubmit(
 
   /**
    * Set a <select> element to the best matching option for the given field.
-   * Tries to match: other/otro/general/consulta/información as universal fallbacks.
+   *
+   * Uses the expanded formData (dl) to intelligently match dropdown options:
+   *   - Country selects  → tries to match dl.pais
+   *   - Region selects   → tries to match dl.region
+   *   - City selects     → tries to match dl.ciudad
+   *   - Industry selects → tries to match dl.industria, fallback "tech"
+   *   - Company size     → tries to match dl.tamanoempresa
+   *   - Language         → uses dl.idioma
+   *   - Department/topic → uses dl.departamento; then "other/general/consulta" fallback
+   *   - Inquiry type     → uses dl.motivoconsulta; then generic fallback
    */
   function resolveSelectValue(sel: HTMLSelectElement): string | undefined {
     const combined = getFieldSignals(sel)
     const options = Array.from(sel.options).filter((o) => o.value && o.value !== '')
 
-    // Helper: find an option whose text/value matches a regex
+    // Helper: find an option whose visible text or value matches a regex
     const findOpt = (re: RegExp) =>
       options.find((o) => re.test(o.text.toLowerCase()) || re.test(o.value.toLowerCase()))
 
-    // Is this a country/region/province select? Skip — we can't know sender's location
-    if (/\b(country|pa[ií]s|province|provincia|region|state|ciudad|city|zip|postal)\b/i.test(combined)) {
+    // Helper: escape a user value for use inside RegExp
+    const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+    // ── Country ────────────────────────────────────────────────────────────
+    if (/\b(country|pa[ií]s|nation)\b/i.test(combined)) {
+      if (dl.pais) {
+        const exact = findOpt(new RegExp(`\\b${escapeRe(dl.pais)}\\b`, 'i'))
+        if (exact) return exact.value
+        // Well-known Spain variants
+        const spain = findOpt(/spain|espa[ñn]a|\bes\b/)
+        if (spain) return spain.value
+      }
+      return undefined // can't safely guess the country
+    }
+
+    // ── Zip / postal code ──────────────────────────────────────────────────
+    if (/\b(zip|postal|c[oó]digo.?posta)\b/i.test(combined)) {
+      return undefined // never auto-fill postal codes
+    }
+
+    // ── Region / province / state ──────────────────────────────────────────
+    if (/\b(province|provincia|region|state|comunidad)\b/i.test(combined)) {
+      if (dl.region) {
+        const match = findOpt(new RegExp(`\\b${escapeRe(dl.region)}\\b`, 'i'))
+        if (match) return match.value
+      }
       return undefined
     }
 
-    // Topic / department / service selects — try "other/general/consulta" as universal fallback
-    const fallbackOpt = findOpt(/\b(other|otro|others|otros|general|consulta|inquiry|contact|contacto|información|information|asunto|subject)\b/)
-    if (fallbackOpt) return fallbackOpt.value
+    // ── City ───────────────────────────────────────────────────────────────
+    if (/\b(ciudad|city|localidad)\b/i.test(combined)) {
+      if (dl.ciudad) {
+        const match = findOpt(new RegExp(`\\b${escapeRe(dl.ciudad)}\\b`, 'i'))
+        if (match) return match.value
+      }
+      return undefined
+    }
 
-    // If only 1 real option, just pick it
+    // ── Industry / sector ──────────────────────────────────────────────────
+    if (/\b(industria|industry|sector)\b/i.test(combined)) {
+      if (dl.industria) {
+        const match = findOpt(new RegExp(escapeRe(dl.industria), 'i'))
+        if (match) return match.value
+        // Common "technology" variants
+        const tech = findOpt(/\b(tech|tecnolog|software|it\b|tic\b|digital)\b/)
+        if (tech) return tech.value
+      }
+      const other = findOpt(/\b(other|otro|others|otros)\b/)
+      if (other) return other.value
+      return undefined
+    }
+
+    // ── Company size / employees ───────────────────────────────────────────
+    if (/\b(tama[ñn]o|size|employees|empleados|plantilla)\b/i.test(combined)) {
+      if (dl.tamanoempresa) {
+        const match = findOpt(new RegExp(escapeRe(dl.tamanoempresa), 'i'))
+        if (match) return match.value
+        // "small" / micro variants
+        const small = findOpt(/\b(1.?10|1.?9|small|peque[ñn]|micro)\b/)
+        if (small) return small.value
+      }
+      return undefined
+    }
+
+    // ── Language ───────────────────────────────────────────────────────────
+    if (/\b(idioma|language|langue|sprache)\b/i.test(combined)) {
+      const lang = dl.idioma ?? 'es'
+      const match = findOpt(new RegExp(`\\b${lang}\\b`, 'i'))
+      return match?.value
+    }
+
+    // ── Department / division ──────────────────────────────────────────────
+    if (/\b(departamento|department|dept\b|division|[aá]rea)\b/i.test(combined)) {
+      if (dl.departamento) {
+        const match = findOpt(new RegExp(escapeRe(dl.departamento), 'i'))
+        if (match) return match.value
+      }
+      const fallback = findOpt(/\b(other|otro|general|consulta|inquiry|contact|contacto|información|information)\b/)
+      return fallback?.value
+    }
+
+    // ── Inquiry reason / message type ──────────────────────────────────────
+    if (/\b(motivo|reason|tipo.?consulta|inquiry.?type|contact.?reason)\b/i.test(combined)) {
+      if (dl.motivoconsulta) {
+        const match = findOpt(new RegExp(escapeRe(dl.motivoconsulta), 'i'))
+        if (match) return match.value
+      }
+      const fallback = findOpt(/\b(other|otro|general|consulta|information)\b/)
+      return fallback?.value
+    }
+
+    // ── Topic / subject / service (generic dropdowns) ─────────────────────
+    const genericFallback = findOpt(/\b(other|otro|others|otros|general|consulta|inquiry|contact|contacto|información|information|asunto|subject)\b/)
+    if (genericFallback) return genericFallback.value
+
+    // If only 1 real option, pick it
     if (options.length === 1) return options[0].value
 
     return undefined

@@ -43,6 +43,7 @@ import { getAIProvider } from '@services/ai.service'
 import { createOutreachService } from '@services/outreach'
 import { isSimulation } from '@services/runtime.service'
 import { useBusinessStore } from '@store/business.store'
+import { useSettingsStore } from '@store/settings.store'
 import {
   Select,
   SelectContent,
@@ -222,6 +223,7 @@ function MessageComposer({
   preFill?: { subject: string; body: string }
 }) {
   const { companyName, phone, email: senderEmail } = useBusinessStore()
+  const { formFallbackProfile } = useSettingsStore()
   const [subject, setSubject] = useState(preFill?.subject ?? '')
   const [body, setBody] = useState(preFill?.body ?? '')
   const [aiLoading, setAiLoading] = useState(false)
@@ -367,12 +369,25 @@ function MessageComposer({
         contactId: contact.id,
         contactFormUrl: contact.contactFormUrl!,
         formData: {
-          nombre: companyName || undefined,
-          email: senderEmail || undefined,
-          empresa: companyName || undefined,
+          // Core identity & message
+          nombre:   companyName || undefined,
+          apellido: companyName || undefined,
+          email:    senderEmail || undefined,
+          empresa:  companyName || undefined,
           telefono: phone || undefined,
-          asunto: subject.trim() || undefined,
-          mensaje: body.trim(),
+          asunto:   subject.trim() || undefined,
+          mensaje:  body.trim(),
+          // Extended fallback profile — fills any extra form fields automatically
+          cargo:            formFallbackProfile.cargo || undefined,
+          departamento:     formFallbackProfile.departamento || undefined,
+          pais:             formFallbackProfile.pais || undefined,
+          region:           formFallbackProfile.region || undefined,
+          ciudad:           formFallbackProfile.ciudad || undefined,
+          industria:        formFallbackProfile.industria || undefined,
+          tamanoEmpresa:    formFallbackProfile.tamanoEmpresa || undefined,
+          fuenteReferencia: formFallbackProfile.fuenteReferencia || undefined,
+          motivoConsulta:   formFallbackProfile.motivoConsulta || undefined,
+          idioma:           formFallbackProfile.idioma || undefined,
         },
       })
       // Progress updates arrive via chrome.runtime.onMessage listener above

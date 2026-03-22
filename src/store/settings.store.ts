@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import type { ProfileName, LogLevel } from '@core/types/extension.types'
 import { extensionConfig } from '@config/extension.config'
+import type { FormFallbackProfile } from '@core/types/contact.types'
+import { DEFAULT_FALLBACK_PROFILE } from '@core/types/contact.types'
 
 interface SettingsStore {
   profile: ProfileName
@@ -13,6 +15,8 @@ interface SettingsStore {
   fileNamePrefix: string
   includeDate: boolean
   savedFolderPath: string // resolved via showDirectoryPicker, display-only in extension
+  /** Extended fallback data for filling form fields beyond the Business Profile */
+  formFallbackProfile: FormFallbackProfile
   setProfile: (profile: ProfileName) => void
   setDebugMode: (debug: boolean) => void
   setLogLevel: (level: LogLevel) => void
@@ -22,6 +26,7 @@ interface SettingsStore {
   setFileNamePrefix: (prefix: string) => void
   setIncludeDate: (include: boolean) => void
   setSavedFolderPath: (path: string) => void
+  setFormFallbackProfile: (profile: FormFallbackProfile) => void
 }
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -36,6 +41,7 @@ export const useSettingsStore = create<SettingsStore>()(
       fileNamePrefix: 'informe-vibe',
       includeDate: true,
       savedFolderPath: '',
+      formFallbackProfile: DEFAULT_FALLBACK_PROFILE,
 
       setProfile: (profile) => set({ profile }),
       setDownloadFolder: (downloadFolder) => set({ downloadFolder }),
@@ -46,6 +52,7 @@ export const useSettingsStore = create<SettingsStore>()(
       setLogLevel: (logLevel) => set({ logLevel }),
       setInfiniteEnergy: (infiniteEnergy) => set({ infiniteEnergy }),
       setStealthEnabled: (stealthEnabled) => set({ stealthEnabled }),
+      setFormFallbackProfile: (formFallbackProfile) => set({ formFallbackProfile }),
     }),
     {
       name: 'sef:settings',

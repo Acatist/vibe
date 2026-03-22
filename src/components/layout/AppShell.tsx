@@ -172,11 +172,13 @@ export function AppShell() {
     <div className="flex flex-col h-screen bg-background text-foreground">
       <Header />
       <Navigation activeTab={activeTab} onTabChange={setActiveTab} />
-      <div className="flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <main className="p-4 min-h-full flex flex-col animate-fade-in" key={activeTab}>
-          <ErrorBoundary key={activeTab}>
-            <ActiveView onNavigate={setActiveTab} />
-          </ErrorBoundary>
+      <div className="flex-1 overflow-y-auto">
+        <main className="p-4 min-h-full flex flex-col">
+          <div key={activeTab} className="animate-fade-in flex flex-col flex-1">
+            <ErrorBoundary>
+              <ActiveView onNavigate={setActiveTab} />
+            </ErrorBoundary>
+          </div>
         </main>
       </div>
       {/* DEV TEST — provisional floating panel, remove when no longer needed */}

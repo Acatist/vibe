@@ -496,6 +496,52 @@
 /* ─────────────────────────────────────────────
    Vibe Reach layout utilities
    ───────────────────────────────────────────── */
+
+/* ── Themed scrollbars ────────────────────────────────────────────────────────
+   Uses the active theme's CSS variables so scrollbars automatically match
+   every theme (twitter, perpetuity, cosmic-night, violet-bloom, mocha-mousse,
+   elegant-luxury) and toggle correctly between light and dark modes.
+
+   WebKit / Blink (Chrome extensions run on Chromium — this is the only engine
+   that matters here):
+     Track  → --muted          (dim background strip)
+     Thumb  → --border         (default handle colour)
+     Thumb hover → --primary   (accent highlight on hover)
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/* Thin-rail style — 6 px wide, rounded */
+* {
+  scrollbar-width: thin;
+  /* Firefox uses the two-value syntax: thumb-color  track-color */
+  scrollbar-color: oklch(var(--border)) oklch(var(--muted));
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: oklch(var(--muted));
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: oklch(var(--border));
+  border-radius: 999px;
+  /* Subtle inset so it doesn't completely fill the track */
+  border: 1px solid oklch(var(--muted));
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(var(--primary));
+  border-color: oklch(var(--primary));
+}
+
+::-webkit-scrollbar-corner {
+  background: oklch(var(--muted));
+}
 .sef-popup {
   width: 380px;
   min-height: 280px;

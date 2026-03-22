@@ -25,6 +25,49 @@ export interface DomainMeta {
   language?: string
 }
 
+/**
+ * Extended fallback data used to fill form fields that go beyond the basic
+ * Business Profile (company name, email, phone).  Persisted per-workspace and
+ * sent alongside every FORM_SUBMIT_START message so the background engine can
+ * populate any extra field a contact form might present.
+ */
+export interface FormFallbackProfile {
+  /** Job title shown in "Cargo / Position / Title" fields */
+  cargo: string
+  /** Department shown in topic/department dropdowns (e.g. "general") */
+  departamento: string
+  /** Sender country (e.g. "España") */
+  pais: string
+  /** Sender region or province */
+  region: string
+  /** Sender city */
+  ciudad: string
+  /** Industry / sector (e.g. "Tecnología") */
+  industria: string
+  /** Company size band (e.g. "1-10", "11-50") */
+  tamanoEmpresa: string
+  /** How the sender found the site — fills referral/source dropdowns */
+  fuenteReferencia: string
+  /** Default inquiry reason — fills reason/subject-type dropdowns */
+  motivoConsulta: string
+  /** Preferred language code */
+  idioma: 'es' | 'en'
+}
+
+/** Sensible defaults for FormFallbackProfile */
+export const DEFAULT_FALLBACK_PROFILE: FormFallbackProfile = {
+  cargo: 'Business Development',
+  departamento: 'general',
+  pais: 'España',
+  region: '',
+  ciudad: '',
+  industria: 'Tecnología',
+  tamanoEmpresa: '1-10',
+  fuenteReferencia: 'Búsqueda web',
+  motivoConsulta: 'Consulta comercial',
+  idioma: 'es',
+}
+
 export interface Contact {
   id: string
   name: string

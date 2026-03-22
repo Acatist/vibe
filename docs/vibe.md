@@ -1,6 +1,6 @@
 # Vibe Reach — Documentación Técnica de Desarrollo
 
-> **Versión:** 1.7.0  
+> **Versión:** 1.9.0  
 > **Última actualización:** 22 de marzo de 2026  
 > **Stack:** Chrome Extension MV3 · React 19 · TypeScript 5.8 · Tailwind CSS v4 · Zustand v5 · Vite
 
@@ -36,7 +36,7 @@
 26. [Decisiones de Diseño y Convenciones](#26-decisiones-de-diseño-y-convenciones)
 27. [Roadmap y Trabajo Pendiente](#27-roadmap-y-trabajo-pendiente)
 
-> Fases implementadas: 1–16 · Build limpio · 48 tests en verde ✅
+> Fases implementadas: 1–17 · Build limpio · 48 tests en verde ✅
 
 ---
 
@@ -398,6 +398,35 @@ El sistema de temas usa **Tailwind CSS v4** con tokens OKLCH definidos en `src/s
 Las variables siguen el patrón `--color-<token>` donde los tokens incluyen:
 `primary`, `primary-foreground`, `secondary`, `background`, `foreground`, `card`, `card-foreground`, `muted`, `muted-foreground`, `accent`, `accent-foreground`, `border`, `input`, `ring`, `destructive`, `sidebar-*`.
 
+### Scrollbars temáticos
+
+Todos los scrollbars de la extensión son **visibles y teñidos automáticamente** por el tema activo. El bloque de estilos se define en `src/styles/globals.css` fuera de `@layer base` (para tener mayor especificidad en el contexto de la extensión):
+
+```css
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(var(--border)) oklch(var(--muted));
+}
+
+/* Chromium / Chrome Extension (único motor relevante) */
+::-webkit-scrollbar        { width: 6px; height: 6px; }
+::-webkit-scrollbar-track  { background: oklch(var(--muted)); border-radius: 999px; }
+::-webkit-scrollbar-thumb  { background: oklch(var(--border)); border-radius: 999px;
+                              border: 1px solid oklch(var(--muted)); }
+::-webkit-scrollbar-thumb:hover { background: oklch(var(--primary));
+                                   border-color: oklch(var(--primary)); }
+::-webkit-scrollbar-corner { background: oklch(var(--muted)); }
+```
+
+| Elemento | Variable CSS | Aspecto |
+|---|---|---|
+| Track (fondo) | `--muted` | Carril tenue |
+| Thumb (pastilla) | `--border` | Handle sutil |
+| Thumb hover | `--primary` | Acento del tema |
+
+Al cambiar de tema o de modo claro/oscuro, los scrollbars se actualizan automáticamente sin JavaScript.
+
 ---
 
 ## 7. Sistema de Internacionalización (i18n)
@@ -448,17 +477,22 @@ Contenedor raíz del sidepanel. Estructura:
 <div className="flex flex-col h-screen">
   <Header />
   <Navigation activeTab onTabChange />
-  <div className="flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-    <main className="p-4 min-h-full flex flex-col animate-fade-in">
-      <ActiveView onNavigate={setActiveTab} />
+  <div className="flex-1 overflow-y-auto">
+    <main className="p-4 min-h-full flex flex-col">
+      <div key={activeTab} className="animate-fade-in flex flex-col flex-1">
+        <ErrorBoundary>
+          <ActiveView onNavigate={setActiveTab} />
+        </ErrorBoundary>
+      </div>
     </main>
   </div>
 </div>
 ```
 
-- El scrollbar está **oculto visualmente** pero funcional (`scrollbar-width:none` + webkit).
+- Los scrollbars son **visibles y temáticos** (ver sección 6 — Scrollbars temáticos).
+- `<main>` está **permanentemente montado** con `min-h-full` — el contenedor de scroll nunca ve un estado vacío y no parpadea al cambiar de tab.
 - La vista activa se monta via `VIEW_MAP[activeTab]`, un mapa de `TabId → React.ComponentType`.
-- Cada cambio de tab aplica `key={activeTab}` para re-montar con animación fade-in.
+- `key={activeTab}` se aplica al `<div>` interior (no a `<main>`) para re-montar solo el contenido con animación fade-in sin recrear el scroll container.
 
 #### Listener global de mensajes de scraping
 
@@ -997,9 +1031,33 @@ Badge de píldora por categoría con clases de color específicas:
 
 ### SettingsView (`views/SettingsView.tsx`)
 
-Gestión de configuración de la extensión. Organizado en tarjetas. Todos los textos usan `t()` para i18n.
+Gestión de configuración de la extensión. **Todos los módulos están organizados como acordeones** independientes (`rounded-xl border border-border overflow-hidden`). Sin `<Separator>` entre secciones, separados por `space-y-1.5`. Todos los textos usan `t()` para i18n.
 
-**Configuración de IA (multi-proveedor):**
+#### Estado de acordeones
+
+```typescript
+const [openSections, setOpenSections] = useState<Record<string, boolean>>({ ai: true })
+const toggle = (key: string) =>
+  setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }))
+```
+
+- Estado inicial: solo la sección **IA** abierta, el resto colapsado.
+- Cada cabecera de acordeón muestra un `ChevronDown` que rota 180° (`transition-transform duration-200 rotate-180`) cuando la sección está abierta.
+
+#### 8 secciones en orden
+
+| Sección | Icono | Clave estado | Visible |
+|---|---|---|---|
+| IA | `Bot` | `openSections.ai` | Siempre |
+| Perfil de Empresa | `Building2` | `openSections.business` | Siempre |
+| Perfil de Formulario | `Shield` | `openSections.formProfile` | Siempre |
+| Stealth | `ShieldCheck` | `openSections.stealth` | Siempre |
+| Entorno de Ejecución | `Monitor` | `openSections.runtime` | Solo si `debugMode === true` |
+| Energía | `Zap` | `openSections.energy` | Solo si `debugMode === true` |
+| Exportación | `FolderDown` | `openSections.export` | Siempre |
+| Apariencia | `Palette` | `openSections.theme` | Siempre |
+
+**IA (`useAIStore`):**
 
 - Lista ordenable de proveedores configurados (OpenAI / Grok / Google)
 - Cada proveedor: modelo, API Key (toggle), estado (conectado/error), habilitado/deshabilitado
@@ -1014,28 +1072,36 @@ Gestión de configuración de la extensión. Organizado en tarjetas. Todos los t
 - Campos: nombre de empresa, NIF/CIF, teléfono, dirección, email
 - Los datos se aplican automáticamente en PDFs y cabeceras de informes
 
-**Sigilo y Depuración:**
+**Perfil de Formulario (`useSettingsStore.formFallbackProfile`):**
+
+- Editor de `FormFallbackProfile`: cargo, departamento, país, región, ciudad, industria, tamaño empresa, fuente de referencia, motivo de consulta, idioma
+- Valores por defecto automáticos vía `DEFAULT_FALLBACK_PROFILE`
+- Usado por `form.submit.engine.ts` para rellenar automáticamente campos de formularios en producción
+
+**Stealth:**
 
 - Switch de modo sigilo (comportamiento humano)
 - Switch de modo depuración (logging detallado)
 
-**Entorno de Runtime (developer-only):**
+**Entorno de Ejecución (developer-only, `debugMode === true`):**
 
 - Selector de modo: Simulation / Staging / Production (radio buttons tipo card)
-- Visible únicamente cuando `debugMode === true`
 - Al seleccionar `production` se muestra un badge de advertencia
 - Persiste en `useRuntimeStore` → `sef:runtime`
 
-**Exportación y Descargas (`useSettingsStore`):**
+**Energía (developer-only, `debugMode === true`):**
+
+- Información del nivel actual de energía y controles de recarga/reset para pruebas
+
+**Exportación (`useSettingsStore`):**
 
 - Selector de carpeta vía `showDirectoryPicker()` o input manual
 - Prefijo de nombre de archivo (preview dinámico)
 - Switch para incluir fecha ISO en el nombre de archivo
 
-**Selección de Tema:**
+**Apariencia:**
 
-- Acordeón desplegable con grid de temas disponibles
-- Cada tema: swatches de colores + nombre + descripción
+- Grid de temas disponibles con swatches de colores + nombre + descripción
 - Botón toggle modo claro/oscuro
 
 ---
@@ -1612,6 +1678,93 @@ interface OutreachResult {
 
 El `MessageComposer` de `ContactsView` delega exclusivamente en `createOutreachService()` para el canal email. Nunca abre `mailto:` directamente, garantizando que el modo simulación intercepta el envío correctamente.
 
+### Sistema de Seguridad de Formularios (`form.field.resolver.ts`)
+
+La capa de seguridad de formularios protege el envío automático mediante tres componentes:
+
+#### `FormFallbackProfile` (tipo en `contact.types.ts`)
+
+Perfil extendido de datos complementarios, persistido en `useSettingsStore.formFallbackProfile`:
+
+```typescript
+export interface FormFallbackProfile {
+  cargo: string           // Cargo / Job title
+  departamento: string    // Departamento por defecto para dropdowns
+  pais: string            // País (e.g. "España")
+  region: string          // Región / Provincia
+  ciudad: string          // Ciudad
+  industria: string       // Sector / Industria
+  tamanoEmpresa: string   // Tamaño empresa (e.g. "1-10", "11-50")
+  fuenteReferencia: string // Fuente de referencia / cómo nos encontró
+  motivoConsulta: string  // Motivo de consulta por defecto
+  idioma: 'es' | 'en'    // Idioma preferido
+}
+```
+
+Todos los campos tienen valores por defecto sensatos (`DEFAULT_FALLBACK_PROFILE`) para que el sistema funcione sin configuración.
+
+#### `assessFormRisk()` — Clasificación de campos
+
+Analiza los `formFields` detectados durante el scraping y clasifica el riesgo:
+
+| Clasificación | Campos | Acción |
+|---|---|---|
+| `safe`    | Nombre, email, cargo, país, departamento, sector... | Auto-fill |
+| `review`  | Presupuesto, captcha, newsletter | Skip o aviso |
+| `blocked` | DNI/NIF, IBAN/tarjeta, contraseña, CV/adjunto, fecha nacimiento, género | NUNCA auto-fill |
+
+#### Catálogo completo de campos cubiertos
+
+**Campos de texto/email cubiertos (`resolveValue()` en form.submit.engine.ts):**
+- `nombre` / `first name` / `vorname` / `tu nombre`
+- `apellido` / `last name` / `surname` → usa nombre de empresa (B2B)
+- `email` / `correo` / `e-mail`
+- `empresa` / `company` / `organization` / `razón social`
+- `telefono` / `phone` / `móvil` / `tel` / `whatsapp`
+- `asunto` / `subject` / `tema` → AI-generated subject
+- `mensaje` / `message` / `consulta` / `descripción` → AI-generated body
+- `cargo` / `job title` / `position` / `puesto` / `role`
+- `departamento` / `department` / `dept` / `área`
+- `website` / `web` / `url` / `página web`
+- `país` / `country` / `nation`
+- `región` / `region` / `provincia` / `state`
+- `ciudad` / `city` / `localidad`
+- `industria` / `industry` / `sector`
+- `tamaño empresa` / `company size` / `employees`
+- `cómo nos encontró` / `referral source` / `fuente`
+- `motivo consulta` / `inquiry reason` / `contact reason`
+- `idioma` / `language`
+
+**Dropdowns (`resolveSelectValue()`) ahora con matching inteligente:**
+- **País:** busca la opción que coincida con `pais` del perfil (soporta variantes España/Spain/ES)
+- **Región/Provincia:** busca opción que coincida con `region`
+- **Ciudad:** busca opción que coincida con `ciudad`
+- **Industria:** busca match de `industria`; fallback a "tech/tecnología"
+- **Tamaño empresa:** busca match de `tamanoEmpresa`; fallback a rango micro
+- **Idioma:** usa el código de idioma del perfil
+- **Departamento:** usa `departamento`; fallback a "other/general/consulta"
+- **Motivo consulta:** usa `motivoConsulta`; fallback genérico
+
+#### `FORM_SUBMIT_START.formData` — Tipo expandido
+
+```typescript
+formData: {
+  // Core identity & message
+  nombre?: string; apellido?: string; email?: string
+  empresa?: string; telefono?: string; asunto?: string; mensaje: string
+  // Extended fallback profile
+  cargo?: string; departamento?: string; website?: string
+  pais?: string; region?: string; ciudad?: string
+  industria?: string; tamanoEmpresa?: string
+  fuenteReferencia?: string; motivoConsulta?: string; idioma?: string
+}
+```
+
+En `ContactsView.handleSend()`, el objeto `formData` se construye combinando:
+1. **Business Profile** (`useBusinessStore`) — nombre, email, empresa, teléfono
+2. **AI content** — asunto y mensaje generados por IA
+3. **FormFallbackProfile** (`useSettingsStore.formFallbackProfile`) — todos los campos extendidos
+
 ### Factory
 
 ```typescript
@@ -1657,7 +1810,7 @@ storage: createJSONStorage(() => ({
 | `useCampaignStore`      | `sef:campaigns`            | campaigns[]                                                                                           |
 | `useInvestigationStore` | `vibe-reach:investigation` | investigations[], currentId, lastAnalysisMarkdown, lastFinishReason (los campos live no se persisten) |
 | `useReportsStore`       | `sef:reports`              | reports[] (Report[])                                                                                  |
-| `useSettingsStore`      | `sef:settings`             | stealthEnabled, debugMode, downloadFolder, fileNamePrefix, includeDate, savedFolderPath               |
+| `useSettingsStore`      | `sef:settings`             | stealthEnabled, debugMode, downloadFolder, fileNamePrefix, includeDate, savedFolderPath, **formFallbackProfile**               |
 | `useBusinessStore`      | `sef:business`             | logoDataUrl, companyName, nif, address, phone, email                                                  |
 | `useRuntimeStore`       | `sef:runtime`              | mode (RuntimeMode), setMode                                                                           |
 
@@ -2115,7 +2268,7 @@ npm run test:e2e
 
 - Rediseño de `Navigation`: 6 tabs icono-only, `flex-1`, pill style (`rounded-lg`), activo `bg-primary`
 - Eliminado tab `investigation` de la nav (accesible via dashboard)
-- Scrollbar ocultado visualmente: `[scrollbar-width:none] [&::-webkit-scrollbar]:hidden`
+- Scrollbar ocultado visualmente en esta fase: `[scrollbar-width:none] [&::-webkit-scrollbar]:hidden` _(reemplazado en Fase 17 por scrollbars temáticos)_
 - Eliminación del color ladder en el módulo de energía → colores nativos del tema (`text-primary`)
 
 ### Fase 6 — Correcciones TypeScript
@@ -2368,6 +2521,42 @@ Dos bugs interactuando:
 
 ---
 
+### Fase 17 — Pulido UX: scrollbars temáticos, SettingsView acordeón y corrección de parpadeo
+
+**Objetivo:** Mejorar la coherencia visual de la extensión con scrollbars que respetan el tema activo, refactorizar Settings a acordeones para reducir la carga visual y eliminar el parpadeo del scrollbar al cambiar de tab.
+
+**Scrollbars temáticos (`globals.css`):**
+
+- Eliminadas las clases Tailwind `[scrollbar-width:none]` y `[&::-webkit-scrollbar]:hidden` de `AppShell`.
+- Añadido bloque CSS global en `src/styles/globals.css` con reglas WebKit + Firefox que usan las variables OKLCH del tema activo:
+  - Track → `--muted`, Thumb → `--border`, Thumb hover → `--primary`
+  - Ancho 6px, bordes redondeados (`border-radius: 999px`)
+- Los scrollbars se adaptan automáticamente a cualquier tema y a los modos claro/oscuro sin JavaScript.
+
+**SettingsView — refactor a acordeones:**
+
+- Eliminados: `Card`, `CardHeader`, `CardTitle`, `CardContent`, `Separator`, `ChevronUp` de SettingsView.
+- Estado `themeOpen: boolean` → `openSections: Record<string, boolean>` con función `toggle(key: string)` genérica.
+- Estado inicial: `{ ai: true }` — sección IA abierta por defecto, resto colapsado.
+- 8 secciones acordeón con `rounded-xl border border-border overflow-hidden` y `ChevronDown` rotando 180°.
+- Separación entre acordeones: `space-y-1.5` (sin `<Separator>` ni `<hr>`).
+
+**Corrección del parpadeo del scrollbar al cambiar de tab (`AppShell.tsx`):**
+
+- **Causa raíz:** `key={activeTab}` en `<main>` provocaba que React destruyera y recreara el contenedor de scroll en cada cambio de tab. El instante de estado vacío (sin contenido) causaba que `overflow-y-auto` eliminara la scrollbar y luego la volviera a mostrar → parpadeo visual.
+- **Intento fallido:** Cambiar a `overflow-y-scroll` reservaba espacio pero dejaba el track permanentemente visible incluso sin contenido.
+- **Solución definitiva:**
+  - `<main>` permanece montado (sin `key`) con `min-h-full` → el scroll container nunca ve un estado vacío.
+  - `key={activeTab}` movido al `<div>` interior → solo el contenido de la vista se remonta con animación.
+  - `overflow-y-auto` preservado → track solo aparece cuando hay contenido que desborda realmente.
+
+**Archivos modificados:**
+- `src/styles/globals.css` — bloque scrollbar añadido
+- `src/components/layout/AppShell.tsx` — estructura main/inner-div
+- `src/sidepanel/views/SettingsView.tsx` — acordeones completos
+
+---
+
 ## 26. Decisiones de Diseño y Convenciones
 
 ### Convenciones de código
@@ -2395,7 +2584,7 @@ Dos bugs interactuando:
 
 ### Principios de UI
 
-- **Sin scroll visible** — scrollbar funcional pero invisible
+- **Scrollbars temáticos** — visibles, 6px, colores sincronizados automáticamente con el tema activo vía variables OKLCH. Track: `--muted`, Thumb: `--border`, Hover: `--primary`.
 - **Colores nativos del tema** — todos los componentes usan variables CSS del tema activo (`text-primary`, `bg-primary`, etc.), nunca colores hardcoded
 - **Tooltips en elementos complejos** — `TooltipProvider` + `InfoTip` en campos que necesitan explicación
 - **Datos mock para desarrollo** — `ContactsView` usa datos de demostración como fallback cuando el store de contactos está vacío; los contactos reales se poblan via `ScrapingOrchestrator`
@@ -2434,6 +2623,19 @@ Dos bugs interactuando:
 - [x] `ContactsView` — `MessageComposer.handleSend()` usa `createOutreachService()` — modo simulación intercepta correctamente el envío de emails
 - [x] `HistoryView` — borrar todo el historial y borrar entrada por entrada (con confirmación)
 - [x] `HistoryView` — rediseño de cards: pill de canal con color, stats row limpio, sección Envíos con barras de progreso, timeline mejorado
+- [x] **Sistema de seguridad de formularios** (`form.field.resolver.ts`) — `FormFallbackProfile`, `assessFormRisk()`, `buildFormData()`, catálogo de campos safe/review/blocked
+- [x] **`FormFallbackProfile` persistida** en `useSettingsStore` con valores por defecto automáticos
+- [x] **SettingsView** — nueva sección "Perfil de Formulario" con editor completo (cargo, departamento, país, región, ciudad, industria, tamaño empresa, idioma, fuente referencia, motivo consulta)
+- [x] **`FORM_SUBMIT_START.formData`** expandido con todos los campos del perfil extendido
+- [x] **`form.submit.engine.ts` `resolveValue()`** — 10 nuevos matchers (cargo, departamento, website, país, región, ciudad, industria, tamaño, fuente, motivo, idioma)
+- [x] **`resolveSelectValue()`** — matching inteligente con datos reales del perfil para dropdowns de país, región, ciudad, industria, tamaño empresa, idioma, departamento y motivo de consulta
+
+### Completado (Fase 17 — Pulido UX)
+
+- [x] Scrollbars temáticos en toda la extensión (`globals.css`): 6px, redondeados, `--muted`/`--border`/`--primary`, sin JS
+- [x] `SettingsView` refactorizado a 8 acordeones (`openSections` + `toggle(key)`): IA, Empresa, Formulario, Stealth, Runtime (debug), Energía (debug), Exportación, Apariencia
+- [x] Sin `<Separator>` entre secciones Settings — solo `space-y-1.5`
+- [x] Corrección de parpadeo del scrollbar al cambiar de tab — `<main>` permanente + `key` en div interior
 
 ### Completado (Fase 13 — Multi-motor + Humanización + Scorer)
 
@@ -2498,4 +2700,4 @@ Dos bugs interactuando:
 
 ---
 
-_Documentación actualizada el 22 de marzo de 2026 · Vibe Reach v1.7.0_
+_Documentación actualizada el 22 de marzo de 2026 · Vibe Reach v1.9.0_

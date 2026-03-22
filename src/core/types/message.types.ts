@@ -212,14 +212,28 @@ export interface MessagePayloadMap {
   [MessageType.FORM_SUBMIT_START]: {
     contactId: string
     contactFormUrl: string
-    /** Fields to fill in the form */
+    /** Fields to fill in the form — core + extended fallback profile */
     formData: {
+      // ── Core identity & message ──────────────────────────────────────
       nombre?: string
+      apellido?: string
       email?: string
       empresa?: string
       telefono?: string
       asunto?: string
       mensaje: string
+      // ── Extended fallback profile ────────────────────────────────────
+      cargo?: string
+      departamento?: string
+      website?: string
+      pais?: string
+      region?: string
+      ciudad?: string
+      industria?: string
+      tamanoEmpresa?: string
+      fuenteReferencia?: string
+      motivoConsulta?: string
+      idioma?: string
     }
   }
   [MessageType.FORM_SUBMIT_PROGRESS]: {
