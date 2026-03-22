@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronDown, ChevronUp } from 'lucide-react'
+import { ChevronDown, ChevronUp, Trash2 } from 'lucide-react'
 import { useCampaignStore } from '@store/campaign.store'
 import { useContactsStore } from '@store/contacts.store'
 import { useReportsStore } from '@store/reports.store'
@@ -315,7 +315,11 @@ const STATUS_CFG: Record<HistoryRecord['status'], { label: string; cls: string }
   paused: { label: 'Pausada', cls: 'bg-muted text-muted-foreground border-border' },
 }
 
-const CHANNEL_EMOJI: Record<string, string> = { Email: '✉️', LinkedIn: '💼', Web: '🌐' }
+const CHANNEL_CFG: Record<string, { icon: string; cls: string }> = {
+  Email: { icon: '✉', cls: 'bg-blue-500/10 text-blue-400 border border-blue-500/20' },
+  LinkedIn: { icon: '💼', cls: 'bg-sky-500/10 text-sky-400 border border-sky-500/20' },
+  Web: { icon: '🌐', cls: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' },
+}
 
 // ── Component ──────────────────────────────────────────────────────────────────
 interface HistoryViewProps {
@@ -324,11 +328,13 @@ interface HistoryViewProps {
 
 export function HistoryView({ onNavigate: _ }: HistoryViewProps) {
   const { t } = useTranslation()
-  const { campaigns } = useCampaignStore()
+  const { campaigns, deleteCampaign } = useCampaignStore()
   const allContacts = useContactsStore((s) => s.contacts)
-  const { reports } = useReportsStore()
+  const { reports, deleteReport } = useReportsStore()
   const [open, setOpen] = useState<string | null>(null)
   const [activeSection, setActiveSection] = useState<Record<string, string>>({})
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false)
+  const [hiddenDemoIds, setHiddenDemoIds] = useState<Set<string>>(new Set())
   const toggle = (id: string) => setOpen((p) => (p === id ? null : id))
   const toggleSection = (rid: string, sec: string) =>
     setActiveSection((p) => ({ ...p, [rid]: p[rid] === sec ? '' : sec }))
@@ -343,7 +349,30 @@ export function HistoryView({ onNavigate: _ }: HistoryViewProps) {
         const reportsForCampaign = reports.filter((r) => r.campaignId === c.id).length
         return campaignToHistory(c, allContacts, reportsForCampaign)
       })
-    : DEMO_HISTORY
+    : DEMO_HISTORY.filter((h) => !hiddenDemoIds.has(h.id))
+
+  function handleDeleteRecord(id: string) {
+    if (hasRealData) {
+      deleteCampaign(id)
+      reports.filter((r) => r.campaignId === id).forEach((r) => deleteReport(r.id))
+    } else {
+      setHiddenDemoIds((prev) => new Set([...prev, id]))
+    }
+    if (open === id) setOpen(null)
+  }
+
+  function handleDeleteAll() {
+    if (hasRealData) {
+      finishedCampaigns.forEach((c) => {
+        deleteCampaign(c.id)
+        reports.filter((r) => r.campaignId === c.id).forEach((r) => deleteReport(r.id))
+      })
+    } else {
+      setHiddenDemoIds(new Set(DEMO_HISTORY.map((h) => h.id)))
+    }
+    setConfirmDeleteAll(false)
+    setOpen(null)
+  }
 
   const totalContacts = HISTORY.reduce((s, h) => s + h.contactsFound, 0)
   const totalSent = HISTORY.reduce((s, h) => s + h.sent, 0)
@@ -355,11 +384,43 @@ export function HistoryView({ onNavigate: _ }: HistoryViewProps) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-base font-bold">{t('history.title')}</h2>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
             {t('history.count', { count: HISTORY.length })}
+            {!hasRealData && HISTORY.length > 0 && (
+              <span className="px-1.5 py-0.5 rounded bg-muted text-[9px] font-medium uppercase tracking-wide">
+                demo
+              </span>
+            )}
           </p>
         </div>
-        <span className="text-2xl">📚</span>
+        <div className="flex items-center gap-2">
+          {HISTORY.length > 0 &&
+            (confirmDeleteAll ? (
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-muted-foreground">¿Eliminar todo?</span>
+                <button
+                  className="text-[11px] text-destructive font-semibold hover:underline"
+                  onClick={handleDeleteAll}
+                >
+                  Sí, borrar
+                </button>
+                <button
+                  className="text-[11px] text-muted-foreground hover:underline"
+                  onClick={() => setConfirmDeleteAll(false)}
+                >
+                  Cancelar
+                </button>
+              </div>
+            ) : (
+              <button
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                onClick={() => setConfirmDeleteAll(true)}
+                title="Eliminar todo el historial"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            ))}
+        </div>
       </div>
 
       {/* Summary strip */}
@@ -380,8 +441,16 @@ export function HistoryView({ onNavigate: _ }: HistoryViewProps) {
         ))}
       </div>
 
+      {/* Empty state */}
+      {HISTORY.length === 0 && (
+        <div className="rounded-xl border border-dashed border-border bg-muted/20 p-10 flex flex-col items-center gap-2">
+          <span className="text-3xl opacity-40">📚</span>
+          <p className="text-xs text-muted-foreground">No hay registros en el historial</p>
+        </div>
+      )}
+
       {/* Records */}
-      <div className="space-y-3">
+      <div className="space-y-2">
         {HISTORY.map((record) => {
           const isOpen = open === record.id
           const cfg = STATUS_CFG[record.status]
@@ -392,58 +461,80 @@ export function HistoryView({ onNavigate: _ }: HistoryViewProps) {
               key={record.id}
               className={`rounded-xl border bg-card overflow-hidden ${
                 record.status === 'failed' ? 'border-destructive/20' : 'border-border'
-              }`}
+              } ${isOpen ? 'shadow-sm' : ''}`}
             >
-              {/* Header row */}
+              {/* ── Card header ── */}
               <div
-                className={`flex items-start gap-3 px-4 py-3 cursor-pointer transition-colors ${
-                  isOpen ? 'bg-accent/50' : 'hover:bg-muted/40'
+                className={`px-4 py-3 cursor-pointer transition-colors ${
+                  isOpen ? 'bg-primary/5' : 'hover:bg-muted/40'
                 }`}
                 onClick={() => toggle(record.id)}
               >
-                <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center text-base shrink-0 mt-0.5">
-                  {CHANNEL_EMOJI[record.channel] ?? '📡'}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-xs font-semibold">{record.name}</p>
-                    <span
-                      className={`inline-flex px-1.5 py-0.5 rounded-full border text-[10px] font-medium ${cfg.cls}`}
-                    >
-                      {cfg.label}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground mt-0.5">
-                    {record.createdAt} → {record.completedAt} · {record.channel} · {record.duration}
-                  </p>
-                  <div className="flex gap-3 mt-1.5 text-[11px]">
-                    <span className="text-muted-foreground">
-                      👥{' '}
-                      <span className="font-medium text-card-foreground">
-                        {record.contactsFound}
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    {/* Name + status */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-xs font-semibold truncate">{record.name}</p>
+                      <span
+                        className={`inline-flex px-1.5 py-0.5 rounded-full border text-[10px] font-medium shrink-0 ${cfg.cls}`}
+                      >
+                        {cfg.label}
                       </span>
-                    </span>
-                    <span className="text-muted-foreground">
-                      📤 <span className="font-medium text-card-foreground">{record.sent}</span>
-                    </span>
-                    <span className="text-muted-foreground">
-                      📩 <span className="font-medium text-primary">{record.responded}</span>
-                    </span>
-                    <span className="text-muted-foreground">
-                      📋 <span className="font-medium text-primary">{record.reportsGenerated}</span>
-                    </span>
+                    </div>
+                    {/* Channel + date + duration */}
+                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                      <span
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                          CHANNEL_CFG[record.channel]?.cls ?? 'bg-muted text-muted-foreground'
+                        }`}
+                      >
+                        {CHANNEL_CFG[record.channel]?.icon ?? '📡'} {record.channel}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground">
+                        {record.createdAt} → {record.completedAt}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground">· {record.duration}</span>
+                    </div>
+                    {/* Stats row */}
+                    <div className="flex items-center gap-3 mt-1.5">
+                      <span className="text-[11px] text-muted-foreground tabular-nums">
+                        <span className="font-semibold text-foreground">{record.contactsFound}</span>{' '}
+                        contactos
+                      </span>
+                      <span className="text-[11px] text-muted-foreground tabular-nums">
+                        <span className="font-semibold text-foreground">{record.sent}</span> enviados
+                      </span>
+                      {record.responded > 0 && (
+                        <span className="text-[11px] text-primary tabular-nums font-medium">
+                          {record.responded} resp.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {/* Delete + chevron */}
+                  <div className="flex items-center gap-0.5 shrink-0 -mr-1">
+                    <button
+                      className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDeleteRecord(record.id)
+                      }}
+                      title="Eliminar registro"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                    {isOpen ? (
+                      <ChevronUp className="w-4 h-4 text-muted-foreground" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                    )}
                   </div>
                 </div>
-                {isOpen ? (
-                  <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0 mt-1" />
-                ) : (
-                  <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0 mt-1" />
-                )}
               </div>
 
-              {/* Expanded */}
+              {/* ── Expanded content ── */}
               {isOpen && (
-                <div className="bg-accent/40 border-t border-border">
+                <div className="border-t border-border">
                   {/* Section pills */}
                   <div className="flex gap-1 px-4 pt-3 pb-1 flex-wrap">
                     {[
@@ -466,7 +557,7 @@ export function HistoryView({ onNavigate: _ }: HistoryViewProps) {
                     ))}
                   </div>
 
-                  <div className="px-4 pb-4 pt-2 space-y-3">
+                  <div className="px-4 pb-4 pt-2 space-y-2">
                     {sec === '' && (
                       <p className="text-[11px] text-muted-foreground text-center py-3">
                         {t('history.selectSection')}
@@ -475,164 +566,186 @@ export function HistoryView({ onNavigate: _ }: HistoryViewProps) {
 
                     {/* ── Investigation ── */}
                     {sec === 'investigation' && (
-                      <div className="space-y-3">
-                        <div className="rounded-lg border border-border bg-card p-3 space-y-2">
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      <div className="space-y-2">
+                        <div className="rounded-lg border border-border bg-background p-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">
                             {t('history.investigationPrompt')}
                           </p>
-                          <p className="text-xs leading-relaxed">{record.prompt}</p>
+                          <p className="text-xs leading-relaxed text-foreground/90">{record.prompt}</p>
                         </div>
                         <div className="grid grid-cols-2 gap-2">
-                          <div className="rounded-lg border border-border bg-card p-2.5">
+                          <div className="rounded-lg border border-border bg-background px-3 py-2">
                             <p className="text-[10px] text-muted-foreground mb-0.5">
                               {t('history.aiModel')}
                             </p>
                             <p className="text-xs font-semibold">🤖 {record.aiModel}</p>
                           </div>
-                          <div className="rounded-lg border border-border bg-card p-2.5">
+                          <div className="rounded-lg border border-border bg-background px-3 py-2">
                             <p className="text-[10px] text-muted-foreground mb-0.5">
                               {t('history.duration')}
                             </p>
                             <p className="text-xs font-semibold">⏱ {record.duration}</p>
                           </div>
                         </div>
-                        <div className="rounded-lg border border-border bg-card p-3">
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
-                            {t('history.sourcesAnalyzed')}
-                          </p>
-                          <div className="flex flex-wrap gap-1.5">
-                            {record.domains.map((d) => (
-                              <span
-                                key={d}
-                                className="px-2 py-0.5 rounded-full bg-muted text-[10px] font-medium"
-                              >
-                                🌐 {d}
-                              </span>
-                            ))}
+                        {record.domains.length > 0 && (
+                          <div className="rounded-lg border border-border bg-background p-3">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                              {t('history.sourcesAnalyzed')}
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {record.domains.map((d) => (
+                                <span
+                                  key={d}
+                                  className="px-2 py-0.5 rounded-full bg-muted text-[10px] font-medium"
+                                >
+                                  🌐 {d}
+                                </span>
+                              ))}
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </div>
                     )}
 
                     {/* ── Contacts ── */}
                     {sec === 'contacts' && (
-                      <div className="space-y-3">
+                      <div className="space-y-2">
                         <div className="grid grid-cols-3 gap-2">
                           {[
                             {
                               label: t('history.discovered'),
                               value: String(record.contactsFound),
-                              color: 'text-accent-foreground',
+                              color: 'text-foreground',
                             },
                             {
                               label: t('history.avgScoreShort'),
-                              value: String(record.avgScore),
+                              value: `${record.avgScore}%`,
                               color: 'text-primary',
                             },
                             {
                               label: t('history.maxScore'),
-                              value: String(record.highScore),
+                              value: `${record.highScore}%`,
                               color: 'text-primary',
                             },
                           ].map((s) => (
                             <div
                               key={s.label}
-                              className="rounded-lg border border-border bg-card p-2 text-center"
+                              className="rounded-lg border border-border bg-background p-2 text-center"
                             >
-                              <p className={`text-base font-bold ${s.color}`}>{s.value}</p>
-                              <p className="text-[10px] text-muted-foreground">{s.label}</p>
+                              <p className={`text-base font-bold tabular-nums ${s.color}`}>
+                                {s.value}
+                              </p>
+                              <p className="text-[10px] text-muted-foreground leading-tight">
+                                {s.label}
+                              </p>
                             </div>
                           ))}
                         </div>
-                        <div className="rounded-lg border border-border bg-card overflow-hidden">
-                          <div className="px-3 py-2 bg-muted/50 border-b border-border">
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                              {t('history.categoriesFound')}
-                            </p>
+                        {record.categoriesFound.length > 0 && (
+                          <div className="rounded-lg border border-border bg-background overflow-hidden">
+                            <div className="px-3 py-2 border-b border-border bg-muted/30">
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                {t('history.categoriesFound')}
+                              </p>
+                            </div>
+                            {record.categoriesFound.map((cat, i) => {
+                              const pct =
+                                record.contactsFound > 0
+                                  ? Math.round((cat.count / record.contactsFound) * 100)
+                                  : 0
+                              return (
+                                <div
+                                  key={cat.cat}
+                                  className={`px-3 py-2 ${
+                                    i < record.categoriesFound.length - 1
+                                      ? 'border-b border-border/60'
+                                      : ''
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between text-xs mb-1">
+                                    <span className="font-medium">{cat.cat}</span>
+                                    <span className="text-muted-foreground tabular-nums text-[10px]">
+                                      {cat.count} · {pct}%
+                                    </span>
+                                  </div>
+                                  <div className="h-1 rounded-full bg-muted overflow-hidden">
+                                    <div
+                                      className="h-full rounded-full bg-primary"
+                                      style={{ width: `${pct}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              )
+                            })}
                           </div>
-                          {record.categoriesFound.map((cat, i) => {
-                            const pct = Math.round((cat.count / record.contactsFound) * 100)
-                            return (
-                              <div
-                                key={cat.cat}
-                                className={`px-3 py-2 ${i < record.categoriesFound.length - 1 ? 'border-b border-border' : ''}`}
-                              >
-                                <div className="flex items-center justify-between text-xs mb-1">
-                                  <span className="font-medium">{cat.cat}</span>
-                                  <span className="text-muted-foreground tabular-nums">
-                                    {cat.count} · {pct}%
-                                  </span>
-                                </div>
-                                <div className="h-1 rounded-full bg-muted overflow-hidden">
-                                  <div
-                                    className="h-full rounded-full bg-primary"
-                                    style={{ width: `${pct}%` }}
-                                  />
-                                </div>
-                              </div>
-                            )
-                          })}
-                        </div>
+                        )}
                       </div>
                     )}
 
                     {/* ── Outreach ── */}
                     {sec === 'outreach' && (
-                      <div className="space-y-3">
-                        <div className="grid grid-cols-2 gap-2">
-                          {[
-                            {
-                              label: t('history.sentLabel'),
-                              value: String(record.sent),
-                              color: 'text-primary',
-                              icon: '✅',
-                            },
-                            {
-                              label: t('history.failedLabel'),
-                              value: String(record.failed),
-                              color: 'text-destructive',
-                              icon: '❌',
-                            },
-                            {
-                              label: t('history.respondedLabel'),
-                              value: String(record.responded),
-                              color: 'text-accent-foreground',
-                              icon: '📩',
-                            },
-                            {
-                              label: t('history.responseRateLabel'),
-                              value: `${record.responseRate}%`,
-                              color: 'text-primary',
-                              icon: '📊',
-                            },
-                          ].map((s) => (
+                      <div className="space-y-2">
+                        {/* Sent progress */}
+                        <div className="rounded-lg border border-border bg-background p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-semibold">
+                              {t('history.sentLabel')}
+                            </span>
+                            <span className="text-[11px] tabular-nums font-bold text-primary">
+                              {record.sent} / {record.contactsFound}
+                            </span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                             <div
-                              key={s.label}
-                              className="rounded-lg border border-border bg-card p-3"
-                            >
-                              <p className="text-xl mb-0.5">{s.icon}</p>
-                              <p className={`text-base font-bold ${s.color}`}>{s.value}</p>
-                              <p className="text-[10px] text-muted-foreground">{s.label}</p>
+                              className="h-full rounded-full bg-primary transition-all"
+                              style={{
+                                width: `${
+                                  record.contactsFound > 0
+                                    ? (record.sent / record.contactsFound) * 100
+                                    : 0
+                                }%`,
+                              }}
+                            />
+                          </div>
+                          {record.failed > 0 && (
+                            <p className="text-[10px] text-destructive">
+                              {record.failed} {t('history.failedLabel').toLowerCase()}
+                            </p>
+                          )}
+                        </div>
+                        {/* Response rate */}
+                        {record.sent > 0 && (
+                          <div className="rounded-lg border border-border bg-background p-3 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-semibold">
+                                {t('history.responseRateLabel')}
+                              </span>
+                              <span className="text-[11px] tabular-nums font-bold text-primary">
+                                {record.responseRate}%
+                              </span>
                             </div>
-                          ))}
-                        </div>
-                        <div className="rounded-lg border border-border bg-card p-3">
-                          <p className="text-[10px] text-muted-foreground mb-1">
-                            {t('history.messageSubject')}
-                          </p>
-                          <p className="text-xs font-medium">"{record.subject}"</p>
-                        </div>
+                            <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-primary/70 transition-all"
+                                style={{ width: `${record.responseRate}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                        {record.subject && (
+                          <div className="rounded-lg border border-border bg-background p-3">
+                            <p className="text-[10px] text-muted-foreground mb-1">
+                              {t('history.messageSubject')}
+                            </p>
+                            <p className="text-xs font-medium">"{record.subject}"</p>
+                          </div>
+                        )}
                         {record.reportsGenerated > 0 && (
                           <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 flex items-center gap-2">
-                            <span className="text-lg">📋</span>
-                            <div>
-                              <p className="text-xs font-medium">
-                                {t('history.reportsGenerated', { count: record.reportsGenerated })}
-                              </p>
-                              <p className="text-[11px] text-muted-foreground">
-                                {t('history.reportsAvailable')}
-                              </p>
-                            </div>
+                            <span className="text-base">📋</span>
+                            <p className="text-xs font-medium">
+                              {t('history.reportsGenerated', { count: record.reportsGenerated })}
+                            </p>
                           </div>
                         )}
                       </div>
@@ -642,26 +755,32 @@ export function HistoryView({ onNavigate: _ }: HistoryViewProps) {
                     {sec === 'timeline' && (
                       <div>
                         {record.timeline.map((event, i) => (
-                          <div key={i} className="flex gap-3">
+                          <div key={i} className="flex gap-2.5">
                             <div className="flex flex-col items-center">
                               <div
-                                className={`w-7 h-7 rounded-full flex items-center justify-center text-sm shrink-0 ${
+                                className={`w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0 ${
                                   event.type === 'success'
-                                    ? 'bg-primary/10'
+                                    ? 'bg-primary/15'
                                     : event.type === 'error'
-                                      ? 'bg-destructive/10'
+                                      ? 'bg-destructive/15'
                                       : 'bg-muted'
                                 }`}
                               >
                                 {event.emoji}
                               </div>
                               {i < record.timeline.length - 1 && (
-                                <div className="w-px flex-1 bg-border my-1" />
+                                <div className="w-px flex-1 bg-border/60 my-1 min-h-3" />
                               )}
                             </div>
-                            <div className="pb-3">
-                              <p className="text-xs font-medium">{event.label}</p>
-                              <p className="text-[10px] text-muted-foreground">{event.time}</p>
+                            <div
+                              className={`${
+                                i === record.timeline.length - 1 ? 'pb-0' : 'pb-2.5'
+                              }`}
+                            >
+                              <p className="text-xs font-medium leading-tight">{event.label}</p>
+                              <p className="text-[10px] text-muted-foreground mt-0.5">
+                                {event.time}
+                              </p>
                             </div>
                           </div>
                         ))}

@@ -1,7 +1,7 @@
 # Vibe Reach — Documentación Técnica de Desarrollo
 
-> **Versión:** 1.6.0  
-> **Última actualización:** 19 de marzo de 2026  
+> **Versión:** 1.7.0  
+> **Última actualización:** 22 de marzo de 2026  
 > **Stack:** Chrome Extension MV3 · React 19 · TypeScript 5.8 · Tailwind CSS v4 · Zustand v5 · Vite
 
 ---
@@ -1056,15 +1056,37 @@ Vista de gestión de campañas. Conectada a `useCampaignStore`.
 
 Vista de historial de campañas terminadas. Conectada a `useCampaignStore`, `useContactsStore`, `useReportsStore`.
 
-- **Datos reales:** Filtra campañas con status `completed` o `failed`. Construye `HistoryRecord` desde datos reales vía `campaignToHistory()`.
-- **Fallback:** Muestra demo data solo si no hay campañas finalizadas.
+- **Datos reales:** Filtra campañas con status `completed` o `failed` o `paused`. Construye `HistoryRecord` desde datos reales vía `campaignToHistory()`.
+- **Fallback demo:** Muestra `DEMO_HISTORY` solo si no hay campañas finalizadas. Las entradas demo ocultas por el usuario (via `hiddenDemoIds`) se excluyen del render sin afectar al store.
+- **Badge DEMO:** Cuando se muestran datos de demostración, aparece una etiqueta `demo` junto al contador de registros.
 - **Stats resumen:** Campañas completadas, contactos totales, mensajes enviados.
-- **Detalle expandible** con secciones:
-  - **Investigación:** Prompt, modelo IA, duración, fuentes analizadas
-  - **Contactos:** Score promedio/máximo, categorías encontradas, descubiertos
-  - **Envíos:** Enviados, fallidos, respondieron, tasa de respuesta, asunto
-  - **Timeline:** Lista de eventos con timestamps
-- **i18n:** Todos los textos usan `t()` (`history.count`, `history.investigation`, etc.)
+
+#### Acciones de borrado
+
+| Acción | Comportamiento |
+| --- | --- |
+| **Eliminar todo** (icono `Trash2` en cabecera) | Muestra confirmación inline `¿Eliminar todo? / Sí, borrar`. Para datos reales: `deleteCampaign(id)` + `deleteReport(id)` de cada informe asociado para todos los registros. Para datos demo: oculta todos en `hiddenDemoIds` (estado local). |
+| **Eliminar registro** (icono `Trash2` en cada card) | Mismo comportamiento pero solo para ese registro. `stopPropagation()` evita que abra/cierre el acordeón. |
+
+#### Diseño de cards
+
+Cada card tiene **cabecera compacta** y **contenido expandible**:
+
+**Cabecera:**
+- Nombre de la campaña + badge de estado (`Completada` / `Fallida` / `Pausada`) con colores por tipo
+- pill de canal con color por tipo (`✉ Email` azul · `💼 LinkedIn` cian · `🌐 Web` esmeralda)
+- Fechas y duración en texto compacto
+- Fila de stats: contactos · enviados · respuestas (solo si > 0)
+- Botón `Trash2` + chevron a la derecha
+
+**Contenido expandido — 4 secciones (pills de navegación):**
+
+| Sección | Contenido |
+| --- | --- |
+| **Investigación** | Prompt completo en caja, modelo IA, duración, fuentes analizadas (si hay) |
+| **Contactos** | Grid 3× (descubiertos, score medio, score máximo) + tabla de categorías con barra de progreso por categoría |
+| **Envíos** | Barra de progreso enviados/total, tasa de respuesta como barra, asunto del mensaje, badge de informes generados |
+| **Timeline** | Lista dot-line connector con emoji, texto y fecha; colores por tipo (`success`=primary, `error`=destructive, `info`=muted) |
 
 ---
 
@@ -1587,6 +1609,8 @@ interface OutreachResult {
 | `SimulationOutreachService` | `simulation` | Registra la acción en el log. Retorna `{ success: true, simulated: true }`. Sin efectos externos |
 | `StagingOutreachService`    | `staging`    | Rate limiter tipo token bucket (10 acciones/min). Delega a producción si hay token disponible    |
 | `ProductionOutreachService` | `production` | Ejecuta acciones reales + consume energía. **TODO:** integración SMTP y LinkedIn API             |
+
+El `MessageComposer` de `ContactsView` delega exclusivamente en `createOutreachService()` para el canal email. Nunca abre `mailto:` directamente, garantizando que el modo simulación intercepta el envío correctamente.
 
 ### Factory
 
@@ -2395,15 +2419,21 @@ Dos bugs interactuando:
 
 ## 27. Roadmap y Trabajo Pendiente
 
-### Completado (Fases 1–12)
+### Completado (Fases 1–16 + mejoras de UX)
 
 - [x] Scaffolding MV3, motor stealth, energy system, sistema de temas, i18n completo
 - [x] Sistema de entornos de runtime con Strategy Pattern (simulation/staging/production)
 - [x] Motor de campaña `executeCampaign()` con pipeline de 5 pasos
 - [x] Motor de afinidad con scoring IA + fallback heurístico
 - [x] Servicio de scraping y outreach con 3 implementaciones + factory
-- [x] `ScrapingOrchestrator` inicial (Google, tab visible, 4 variantes)
+- [x] `ScrapingOrchestrator` multi-motor (Google, DuckDuckGo, Bing, Yahoo)
 - [x] 48 tests en 11 archivos de test — todos en verde
+- [x] `ContactsView` — añadir contacto manualmente (modal con campos completos)
+- [x] `ContactsView` — borrar lista completa de contactos (con confirmación)
+- [x] `ContactsView` — IA bulk fill (genera asunto+cuerpo para todos los contactos a la vez)
+- [x] `ContactsView` — `MessageComposer.handleSend()` usa `createOutreachService()` — modo simulación intercepta correctamente el envío de emails
+- [x] `HistoryView` — borrar todo el historial y borrar entrada por entrada (con confirmación)
+- [x] `HistoryView` — rediseño de cards: pill de canal con color, stats row limpio, sección Envíos con barras de progreso, timeline mejorado
 
 ### Completado (Fase 13 — Multi-motor + Humanización + Scorer)
 
@@ -2468,4 +2498,4 @@ Dos bugs interactuando:
 
 ---
 
-_Documentación actualizada el 19 de marzo de 2026 · Vibe Reach v1.6.0_
+_Documentación actualizada el 22 de marzo de 2026 · Vibe Reach v1.7.0_

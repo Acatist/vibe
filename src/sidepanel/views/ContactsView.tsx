@@ -40,7 +40,16 @@ import { MessageType } from '@core/types/message.types'
 import type { Contact, ContactCategory } from '@core/types/contact.types'
 import type { TabId } from '@components/layout/Navigation'
 import { getAIProvider } from '@services/ai.service'
+import { createOutreachService } from '@services/outreach'
+import { isSimulation } from '@services/runtime.service'
 import { useBusinessStore } from '@store/business.store'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@components/ui/select'
 
 // ─── Category display mapping for real ContactCategory values ────────────────────────────────────
 
@@ -203,12 +212,28 @@ function ScoreBar({ score }: { score: number }) {
   )
 }
 
-function MessageComposer({ contact, context }: { contact: MockContact; context: string }) {
+function MessageComposer({
+  contact,
+  context,
+  preFill,
+}: {
+  contact: MockContact
+  context: string
+  preFill?: { subject: string; body: string }
+}) {
   const { companyName, phone, email: senderEmail } = useBusinessStore()
-  const [subject, setSubject] = useState('')
-  const [body, setBody] = useState('')
+  const [subject, setSubject] = useState(preFill?.subject ?? '')
+  const [body, setBody] = useState(preFill?.body ?? '')
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
+
+  // Sync fields when AI bulk pre-fill data arrives
+  useEffect(() => {
+    if (preFill) {
+      setSubject(preFill.subject)
+      setBody(preFill.body)
+    }
+  }, [preFill])
 
   // Send pipeline state
   type SendStatus = 'idle' | 'sending' | 'done' | 'error'
@@ -309,6 +334,31 @@ function MessageComposer({ contact, context }: { contact: MockContact; context: 
     if (!body.trim()) return
     resetSend()
 
+    // ── Simulation mode: convincing fake animation, zero real outreach ──────
+    // Intercepts BOTH form and email paths so no real data reaches recipients.
+    if (isSimulation()) {
+      setSendStatus('sending')
+      const steps = canSendViaForm
+        ? [
+            { step: 'Accediendo al formulario de contacto…', pct: 15 },
+            { step: 'Rellenando campos del formulario…', pct: 50 },
+            { step: 'Enviando datos del formulario…', pct: 85 },
+          ]
+        : [
+            { step: 'Preparando mensaje de correo…', pct: 20 },
+            { step: 'Conectando con el servidor de correo…', pct: 55 },
+            { step: 'Transmitiendo mensaje…', pct: 85 },
+          ]
+      for (const s of steps) {
+        setSendProgress(s)
+        await new Promise<void>((r) => setTimeout(r, 650))
+      }
+      setSendStatus('done')
+      setSendConfirm('[SIMULACIÓN] Mensaje no enviado — modo de pruebas activo')
+      return
+    }
+
+    // ── Real channels (staging / production) ─────────────────────────────────
     if (canSendViaForm) {
       // ── Form submission pipeline ──────────────────────────────────────────
       setSendStatus('sending')
@@ -327,14 +377,41 @@ function MessageComposer({ contact, context }: { contact: MockContact; context: 
       })
       // Progress updates arrive via chrome.runtime.onMessage listener above
     } else if (canSendViaEmail) {
-      // ── Email fallback via mailto: ─────────────────────────────────────────
-      const mailtoUrl =
-        `mailto:${encodeURIComponent(contact.email)}` +
-        `?subject=${encodeURIComponent(subject.trim())}` +
-        `&body=${encodeURIComponent(body.trim())}`
-      await chrome.tabs.create({ url: mailtoUrl, active: true })
-      setSendStatus('done')
-      setSendConfirm('Cliente de correo abierto con el mensaje pre-rellenado')
+      // ── Email via mailto (production only) ───────────────────────────────
+      try {
+        setSendStatus('sending')
+        setSendProgress({ step: 'Enviando mensaje…', pct: 50 })
+        const fullContact: Contact = {
+          id: contact.id,
+          name: contact.company,
+          role: contact.role || 'Professional',
+          organization: contact.company,
+          email: contact.email,
+          website: contact.website,
+          contactPage: contact.contactPage,
+          specialization: contact.specialization,
+          topics: contact.topics,
+          region: contact.region,
+          recentArticles: [],
+          category: 'researcher',
+          relevanceScore: contact.score,
+          investigationId: '',
+          contactMethod: contact.contactMethod,
+          contactFormUrl: contact.contactFormUrl,
+        }
+        const outreach = createOutreachService()
+        const result = await outreach.sendEmail(fullContact, subject.trim(), body.trim())
+        if (result.success) {
+          setSendStatus('done')
+          setSendConfirm('Cliente de correo abierto con el mensaje pre-rellenado')
+        } else {
+          setSendStatus('error')
+          setSendError(result.error ?? 'Error al enviar el mensaje')
+        }
+      } catch (e) {
+        setSendStatus('error')
+        setSendError((e as Error).message ?? 'Error desconocido')
+      }
     } else {
       setSendStatus('error')
       setSendError('Este contacto no tiene formulario ni email de contacto disponible')
@@ -356,8 +433,14 @@ function MessageComposer({ contact, context }: { contact: MockContact; context: 
           </span>
         </p>
         <div className="flex items-center gap-1">
+          {/* Simulation badge — shown when test mode is active */}
+          {isSimulation() && (
+            <span className="text-[9px] font-bold uppercase tracking-wide border border-amber-500/50 text-amber-400 bg-amber-500/10 rounded px-1.5 py-0.5 shrink-0">
+              TEST
+            </span>
+          )}
           {/* Channel badge */}
-          {canSendViaForm ? (
+          {!isSimulation() && (canSendViaForm ? (
             <span className="text-[9px] border border-emerald-500/40 text-emerald-400 rounded px-1">
               formulario
             </span>
@@ -365,7 +448,7 @@ function MessageComposer({ contact, context }: { contact: MockContact; context: 
             <span className="text-[9px] border border-blue-500/40 text-blue-400 rounded px-1">
               email
             </span>
-          ) : null}
+          ) : null)}
           <TooltipProvider delayDuration={300}>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -475,10 +558,12 @@ function ContactCard({
   contact,
   onDelete,
   context,
+  preFill,
 }: {
   contact: MockContact
   onDelete?: () => void
   context: string
+  preFill?: { subject: string; body: string }
 }) {
   const [open, setOpen] = useState(false)
   const [msgOpen, setMsgOpen] = useState(false)
@@ -645,7 +730,7 @@ function ContactCard({
               )}
             </div>
 
-              {msgOpen && <MessageComposer contact={contact} context={context} />}
+              {msgOpen && <MessageComposer contact={contact} context={context} preFill={preFill} />}
           </div>
         </div>
       )}
@@ -662,6 +747,7 @@ interface ContactsViewProps {
 export function ContactsView({ onNavigate }: ContactsViewProps) {
   const { createCampaign, campaigns } = useCampaignStore()
   const { contacts: allStoreContacts, addContacts, deleteContact, hasEverAddedContact, hiddenMockContactIds, hideMockContact } = useContactsStore()
+  const { companyName: senderCompanyName, phone: senderPhone, email: senderEmailFill } = useBusinessStore()
   const {
     currentId,
     getCurrent,
@@ -737,6 +823,138 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
     } else {
       hideMockContact(id)
     }
+  }
+
+  // ── AI bulk pre-fill (generate subject+body for all contacts at once)
+  const [aiPreFills, setAiPreFills] = useState<Map<string, { subject: string; body: string }>>(
+    new Map(),
+  )
+  const [aiFillingAll, setAiFillingAll] = useState(false)
+  const [aiFilledCount, setAiFilledCount] = useState(0)
+
+  async function handleAIFillAll() {
+    if (aiFillingAll || allDisplayContacts.length === 0) return
+    setAiFillingAll(true)
+    setAiFilledCount(0)
+    const provider = getAIProvider()
+    const senderLines = [
+      senderCompanyName ? `Company: ${senderCompanyName}` : '',
+      senderEmailFill ? `Email: ${senderEmailFill}` : '',
+      senderPhone ? `Phone: ${senderPhone}` : '',
+    ].filter(Boolean)
+    const enrichedContext = [
+      investigationContext || 'Professional outreach and collaboration opportunity.',
+      senderLines.length ? `\nSENDER INFO (for email signature):\n${senderLines.join('\n')}` : '',
+    ]
+      .join('')
+      .trim()
+    const newFills = new Map<string, { subject: string; body: string }>()
+    for (let i = 0; i < allDisplayContacts.length; i++) {
+      const c = allDisplayContacts[i]
+      try {
+        const fullContact: Contact = {
+          id: c.id,
+          name: c.company,
+          role: c.role || 'Professional',
+          organization: c.company,
+          email: c.email,
+          website: c.website,
+          contactPage: c.contactPage,
+          specialization: c.specialization,
+          topics: c.topics,
+          region: c.region,
+          recentArticles: [],
+          category: 'researcher',
+          relevanceScore: c.score,
+          investigationId: '',
+          contactMethod: c.contactMethod,
+          contactFormUrl: c.contactFormUrl,
+        }
+        const result = await provider.generateMessages(fullContact, enrichedContext)
+        if (result.success && result.data) {
+          const isFormFirst = c.contactMethod === 'form' || c.contactMethod === 'both'
+          newFills.set(c.id, {
+            subject: result.data.emailSubject ?? '',
+            body: isFormFirst ? result.data.contactFormMessage : result.data.emailBody,
+          })
+          setAiPreFills(new Map(newFills))
+        }
+      } catch {
+        // Skip contacts where AI generation fails silently
+      }
+      setAiFilledCount(i + 1)
+    }
+    setAiFillingAll(false)
+  }
+
+  // ── Add contact manually
+  const [addContactOpen, setAddContactOpen] = useState(false)
+  const [newContactForm, setNewContactForm] = useState({
+    company: '',
+    email: '',
+    website: '',
+    role: '',
+    category: 'researcher',
+    region: '',
+    topicsText: '',
+  })
+
+  function resetAddContactForm() {
+    setNewContactForm({
+      company: '',
+      email: '',
+      website: '',
+      role: '',
+      category: 'researcher',
+      region: '',
+      topicsText: '',
+    })
+  }
+
+  function handleAddContact() {
+    if (!newContactForm.company.trim() || !newContactForm.email.trim()) return
+    const contactToAdd: Contact = {
+      id: crypto.randomUUID(),
+      name: newContactForm.company.trim(),
+      organization: newContactForm.company.trim(),
+      email: newContactForm.email.trim(),
+      website: newContactForm.website.trim() || '',
+      role: newContactForm.role.trim() || '',
+      contactPage: newContactForm.website.trim()
+        ? `${newContactForm.website.trim()}/contact`
+        : '',
+      specialization: '',
+      topics: newContactForm.topicsText
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean),
+      region: newContactForm.region.trim() || '',
+      recentArticles: [],
+      category: newContactForm.category as ContactCategory,
+      relevanceScore: 0,
+      investigationId: currentId ?? '',
+      contactMethod: 'email',
+      contactFormUrl: null,
+      discarded: false,
+    }
+    addContacts([contactToAdd])
+    resetAddContactForm()
+    setAddContactOpen(false)
+  }
+
+  // ── Confirm clear all contacts
+  const [confirmClearAll, setConfirmClearAll] = useState(false)
+
+  function handleClearAllContacts() {
+    if (hasRealContacts) {
+      investigationContacts.forEach((c) => deleteContact(c.id))
+    } else {
+      MOCK_CONTACTS.filter((c) => !hiddenMockContactIds.includes(c.id)).forEach((c) =>
+        hideMockContact(c.id),
+      )
+    }
+    setConfirmClearAll(false)
+    setAiPreFills(new Map())
   }
 
   // ── Campaign modal state
@@ -945,10 +1163,102 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
             Contactos encontrados
           </h2>
-          <span className="text-xs tabular-nums text-muted-foreground font-medium">
-            {allDisplayContacts.length} total
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs tabular-nums text-muted-foreground font-medium">
+              {allDisplayContacts.length} total
+            </span>
+            {/* AI bulk fill all contacts */}
+            <TooltipProvider delayDuration={200}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 w-7 p-0 border-primary/40 text-primary hover:bg-primary/10"
+                    onClick={handleAIFillAll}
+                    disabled={aiFillingAll || allDisplayContacts.length === 0}
+                  >
+                    {aiFillingAll ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Bot className="w-3 h-3" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">
+                  {aiFillingAll
+                    ? `Generando ${aiFilledCount}/${allDisplayContacts.length}…`
+                    : 'Generar mensajes con IA para todos'}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            {/* Add contact manually */}
+            <TooltipProvider delayDuration={200}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 w-7 p-0"
+                    onClick={() => setAddContactOpen(true)}
+                  >
+                    <Plus className="w-3 h-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">
+                  Añadir contacto manualmente
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            {/* Delete all contacts */}
+            {allDisplayContacts.length > 0 &&
+              (confirmClearAll ? (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    className="text-[10px] text-destructive font-semibold hover:underline"
+                    onClick={handleClearAllContacts}
+                  >
+                    Borrar todo
+                  </button>
+                  <button
+                    className="text-[10px] text-muted-foreground hover:underline"
+                    onClick={() => setConfirmClearAll(false)}
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              ) : (
+                <TooltipProvider delayDuration={200}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => setConfirmClearAll(true)}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs">
+                      Borrar lista completa
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ))}
+          </div>
         </div>
+        {aiFillingAll && (
+          <div className="flex items-center gap-2 mb-1.5">
+            <Progress
+              value={(aiFilledCount / allDisplayContacts.length) * 100}
+              className="flex-1 h-1"
+            />
+            <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
+              {aiFilledCount}/{allDisplayContacts.length}
+            </span>
+          </div>
+        )}
         <Progress value={100} className="h-1" />
       </div>
 
@@ -992,6 +1302,7 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
             contact={contact}
             onDelete={() => handleDeleteContact(contact.id)}
             context={investigationContext}
+            preFill={aiPreFills.get(contact.id)}
           />
         ))}
       </div>
@@ -1230,6 +1541,158 @@ export function ContactsView({ onNavigate }: ContactsViewProps) {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Add Contact — manual entry modal */}
+      {addContactOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setAddContactOpen(false)
+              resetAddContactForm()
+            }
+          }}
+        >
+          <div className="bg-card border border-border rounded-2xl shadow-2xl overflow-hidden w-[calc(100%-20px)] max-h-[calc(100vh-40px)] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
+              <div className="w-9 h-9 rounded-xl bg-primary/15 flex items-center justify-center shrink-0">
+                <User2 className="w-4 h-4 text-primary" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-sm font-semibold">Nuevo Contacto</h3>
+                <p className="text-[11px] text-muted-foreground">Añadir contacto manualmente</p>
+              </div>
+              <button
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+                onClick={() => {
+                  setAddContactOpen(false)
+                  resetAddContactForm()
+                }}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {/* Form */}
+            <div className="px-5 py-4 space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="col-span-2 space-y-1">
+                  <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Empresa / Nombre *
+                  </Label>
+                  <Input
+                    placeholder="Nombre de la empresa o persona…"
+                    value={newContactForm.company}
+                    onChange={(e) => setNewContactForm((p) => ({ ...p, company: e.target.value }))}
+                    className="h-9 text-sm bg-background"
+                    autoFocus
+                  />
+                </div>
+                <div className="col-span-2 space-y-1">
+                  <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Email *
+                  </Label>
+                  <Input
+                    type="email"
+                    placeholder="contacto@empresa.com"
+                    value={newContactForm.email}
+                    onChange={(e) => setNewContactForm((p) => ({ ...p, email: e.target.value }))}
+                    className="h-9 text-sm bg-background"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Sitio Web
+                  </Label>
+                  <Input
+                    placeholder="https://empresa.com"
+                    value={newContactForm.website}
+                    onChange={(e) => setNewContactForm((p) => ({ ...p, website: e.target.value }))}
+                    className="h-9 text-sm bg-background"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Rol
+                  </Label>
+                  <Input
+                    placeholder="Director, Editor…"
+                    value={newContactForm.role}
+                    onChange={(e) => setNewContactForm((p) => ({ ...p, role: e.target.value }))}
+                    className="h-9 text-sm bg-background"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Categoría
+                  </Label>
+                  <Select
+                    value={newContactForm.category}
+                    onValueChange={(v) => setNewContactForm((p) => ({ ...p, category: v }))}
+                  >
+                    <SelectTrigger className="h-9 text-sm bg-background">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="journalist">Periodismo</SelectItem>
+                      <SelectItem value="investigative-reporter">Periodismo Investigativo</SelectItem>
+                      <SelectItem value="ngo">ONG</SelectItem>
+                      <SelectItem value="legal-advocate">Asesoría Legal</SelectItem>
+                      <SelectItem value="researcher">Investigación</SelectItem>
+                      <SelectItem value="activist">Activismo</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Región
+                  </Label>
+                  <Input
+                    placeholder="España, Europa…"
+                    value={newContactForm.region}
+                    onChange={(e) => setNewContactForm((p) => ({ ...p, region: e.target.value }))}
+                    className="h-9 text-sm bg-background"
+                  />
+                </div>
+                <div className="col-span-2 space-y-1">
+                  <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Temas (separados por coma)
+                  </Label>
+                  <Input
+                    placeholder="IA, Privacidad, Big Data…"
+                    value={newContactForm.topicsText}
+                    onChange={(e) =>
+                      setNewContactForm((p) => ({ ...p, topicsText: e.target.value }))
+                    }
+                    className="h-9 text-sm bg-background"
+                  />
+                </div>
+              </div>
+            </div>
+            {/* Footer */}
+            <div className="px-5 py-4 flex gap-2 border-t border-border/50">
+              <Button
+                variant="outline"
+                className="h-10 px-4 text-sm"
+                onClick={() => {
+                  setAddContactOpen(false)
+                  resetAddContactForm()
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button
+                className="flex-1 h-10 text-sm gap-2"
+                disabled={!newContactForm.company.trim() || !newContactForm.email.trim()}
+                onClick={handleAddContact}
+              >
+                <Plus className="w-4 h-4" />
+                Añadir contacto
+              </Button>
+            </div>
           </div>
         </div>
       )}
